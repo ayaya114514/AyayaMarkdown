@@ -1,0 +1,1264 @@
+/* =========================================================
+   AyayaMarkdown —— 样式表
+   - 双主题（浅色/深色）通过 body[data-theme] 切换
+   - 所有颜色用 CSS 变量管理，方便维护
+   ========================================================= */
+
+/* ------- 主题变量 ------- */
+:root,
+body[data-theme="light"] {
+  --bg: #fafbfc;
+  --bg-elevated: #ffffff;
+  --bg-subtle: #f4f5f7;
+  --bg-hover: #eef0f3;
+  --border: #e5e7eb;
+  --border-strong: #d1d5db;
+  --text: #1f2328;
+  --text-muted: #6b7280;
+  --text-faint: #9ca3af;
+  --primary: #4f46e5;
+  --primary-hover: #4338ca;
+  --primary-soft: rgba(79, 70, 229, 0.08);
+  --accent: #10b981;
+  --danger: #ef4444;
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.04);
+  --shadow: 0 4px 12px rgba(0, 0, 0, 0.06);
+  --shadow-lg: 0 12px 32px rgba(0, 0, 0, 0.10);
+  --code-bg: #f6f8fa;
+  --code-border: #e5e7eb;
+  --kbd-bg: #f4f5f7;
+  --syntax-heading: #3730a3;
+  --syntax-heading-bg: rgba(79, 70, 229, 0.09);
+  --syntax-quote: #047857;
+  --syntax-link: #2563eb;
+  --syntax-url: #0f766e;
+  --syntax-code: #b42318;
+  --syntax-code-bg: rgba(180, 35, 24, 0.08);
+  --syntax-list: #9333ea;
+  --syntax-formatting: #8b949e;
+  --syntax-hr: #64748b;
+  --syntax-tag: #c2410c;
+  --syntax-attribute: #7c3aed;
+  --syntax-math-delim: #d97706;
+}
+
+body[data-theme="dark"] {
+  --bg: #0d1117;
+  --bg-elevated: #161b22;
+  --bg-subtle: #1c2128;
+  --bg-hover: #21262d;
+  --border: #30363d;
+  --border-strong: #444c56;
+  --text: #e6edf3;
+  --text-muted: #9ba1a8;
+  --text-faint: #6e7681;
+  --primary: #818cf8;
+  --primary-hover: #a5b4fc;
+  --primary-soft: rgba(129, 140, 248, 0.12);
+  --accent: #34d399;
+  --danger: #f87171;
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
+  --shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+  --shadow-lg: 0 12px 32px rgba(0, 0, 0, 0.5);
+  --code-bg: #1c2128;
+  --code-border: #30363d;
+  --kbd-bg: #21262d;
+  --syntax-heading: #a5b4fc;
+  --syntax-heading-bg: rgba(129, 140, 248, 0.18);
+  --syntax-quote: #6ee7b7;
+  --syntax-link: #93c5fd;
+  --syntax-url: #67e8f9;
+  --syntax-code: #fca5a5;
+  --syntax-code-bg: rgba(252, 165, 165, 0.12);
+  --syntax-list: #d8b4fe;
+  --syntax-formatting: #8b949e;
+  --syntax-hr: #94a3b8;
+  --syntax-tag: #fdba74;
+  --syntax-attribute: #c4b5fd;
+  --syntax-math-delim: #fbbf24;
+}
+
+/* ------- 基础重置 ------- */
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html,
+body {
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+}
+
+body {
+  font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+    "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--text);
+  background: var(--bg);
+  display: flex;
+  flex-direction: column;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  transition: background-color 0.3s ease, color 0.3s ease;
+}
+
+button {
+  font-family: inherit;
+  font-size: inherit;
+  color: inherit;
+  background: none;
+  border: none;
+  cursor: pointer;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+/* ============================================================
+   顶部工具栏
+   ============================================================ */
+.toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 0 20px;
+  height: 56px;
+  background: var(--bg-elevated);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+  position: relative;
+  z-index: 10;
+}
+
+.toolbar-left,
+.toolbar-center,
+.toolbar-right {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.toolbar-center {
+  flex: 1;
+  justify-content: center;
+}
+
+/* Logo */
+.logo {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-weight: 600;
+  font-size: 15px;
+  letter-spacing: 0;
+}
+
+.logo svg {
+  width: 22px;
+  height: 22px;
+  color: var(--primary);
+}
+
+.logo-text {
+  background: linear-gradient(135deg, var(--primary), var(--accent));
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+/* 按钮通用 */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 12px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text);
+  background: transparent;
+  border: 1px solid transparent;
+  transition: background-color 0.15s ease, border-color 0.15s ease, transform 0.15s ease;
+}
+
+.btn:hover {
+  background: var(--bg-hover);
+  border-color: var(--border);
+}
+
+.btn:active {
+  transform: scale(0.97);
+}
+
+.btn svg {
+  width: 16px;
+  height: 16px;
+}
+
+/* 图标按钮（无文字） */
+.icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 8px;
+  color: var(--text-muted);
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.icon-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.icon-btn svg {
+  width: 18px;
+  height: 18px;
+}
+
+/* 主题切换：根据 body 主题显示对应图标 */
+body[data-theme="light"] .icon-moon {
+  display: none;
+}
+body[data-theme="dark"] .icon-sun {
+  display: none;
+}
+
+.icon-sidebar-closed {
+  display: none;
+}
+
+body.sidebar-collapsed .icon-sidebar-open {
+  display: none;
+}
+
+body.sidebar-collapsed .icon-sidebar-closed {
+  display: block;
+}
+
+.divider {
+  width: 1px;
+  height: 22px;
+  background: var(--border);
+  margin: 0 4px;
+}
+
+/* ============================================================
+   工作区：文档列表 / 左编辑 / 分割线 / 右预览
+   ============================================================ */
+.workspace {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+  background: var(--bg);
+}
+
+.document-sidebar {
+  flex: 0 0 var(--sidebar-width, 248px);
+  width: var(--sidebar-width, 248px);
+  min-width: 180px;
+  max-width: 420px;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--bg-elevated);
+  border-right: 1px solid var(--border);
+  position: relative;
+  overflow: hidden;
+  opacity: 1;
+  transform: translateX(0);
+  transition:
+    flex-basis 0.22s ease,
+    width 0.22s ease,
+    min-width 0.22s ease,
+    max-width 0.22s ease,
+    opacity 0.18s ease,
+    transform 0.22s ease,
+    border-color 0.22s ease;
+}
+
+body.sidebar-collapsed .document-sidebar {
+  flex-basis: 0;
+  width: 0;
+  min-width: 0;
+  max-width: 0;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateX(-14px);
+  border-right-color: transparent;
+}
+
+body.sidebar-collapsed .document-sidebar-resizer {
+  display: none;
+}
+
+.document-sidebar-resizer {
+  position: absolute;
+  top: 0;
+  right: -4px;
+  width: 8px;
+  height: 100%;
+  cursor: col-resize;
+  z-index: 2;
+}
+
+.document-sidebar-resizer::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  right: 3px;
+  width: 3px;
+  height: 44px;
+  border-radius: 999px;
+  background: var(--border-strong);
+  opacity: 0;
+  transform: translateY(-50%);
+  transition: opacity 0.15s ease, background-color 0.15s ease;
+}
+
+.document-sidebar-resizer:hover::after,
+.document-sidebar.resizing .document-sidebar-resizer::after {
+  opacity: 1;
+  background: var(--primary);
+}
+
+.document-sidebar-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 12px;
+  min-height: 68px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-subtle);
+}
+
+.document-sidebar-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.document-sidebar-subtitle {
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.document-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.document-action {
+  width: 30px;
+  height: 30px;
+  border-radius: 7px;
+}
+
+.document-action svg {
+  width: 16px;
+  height: 16px;
+}
+
+.document-list {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 8px;
+}
+
+.document-item {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  border-radius: 8px;
+  transition: background-color 0.18s ease, box-shadow 0.18s ease, transform 0.18s ease;
+}
+
+.document-item + .document-item {
+  margin-top: 4px;
+}
+
+.document-item.active {
+  background: var(--primary-soft);
+  box-shadow: inset 3px 0 0 var(--primary);
+}
+
+.document-item:hover {
+  transform: translateX(2px);
+}
+
+.document-switch {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 8px;
+  border-radius: 8px;
+  text-align: left;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.document-switch:hover {
+  background: var(--bg-hover);
+}
+
+.document-item.active .document-switch:hover {
+  background: transparent;
+}
+
+.document-icon {
+  width: 17px;
+  height: 17px;
+  flex-shrink: 0;
+  color: var(--primary);
+}
+
+.document-info {
+  display: block;
+  min-width: 0;
+}
+
+.document-title,
+.document-meta {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.document-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.document-meta {
+  margin-top: 1px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.document-delete {
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  margin-right: 4px;
+  border-radius: 6px;
+  color: var(--text-faint);
+  opacity: 0;
+  transition: background-color 0.15s ease, color 0.15s ease, opacity 0.15s ease;
+}
+
+.document-delete:hover {
+  color: var(--danger);
+  background: var(--bg-hover);
+}
+
+.document-delete svg {
+  width: 14px;
+  height: 14px;
+}
+
+.document-item:hover .document-delete,
+.document-item.active .document-delete {
+  opacity: 1;
+}
+
+.pane {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  background: var(--bg-elevated);
+}
+
+.pane-editor {
+  flex: 0 0 50%;
+}
+
+.pane-preview {
+  flex: 1;
+  border-left: 1px solid var(--border);
+}
+
+/* 面板头部（编辑/预览的小标签） */
+.pane-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 36px;
+  padding: 0 16px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-subtle);
+  flex-shrink: 0;
+}
+
+.pane-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0;
+}
+
+.dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+.dot-edit {
+  background: var(--primary);
+  box-shadow: 0 0 8px var(--primary-soft);
+}
+
+.dot-preview {
+  background: var(--accent);
+  box-shadow: 0 0 8px rgba(16, 185, 129, 0.25);
+}
+
+.pane-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  position: relative;
+}
+
+/* ============================================================
+   编辑器（CodeMirror）
+   ============================================================ */
+.CodeMirror {
+  height: 100% !important;
+  font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 14px;
+  line-height: 1.7;
+  background: var(--bg-elevated);
+  color: var(--text);
+  padding: 8px 0;
+}
+
+.CodeMirror-lines {
+  padding: 8px 0;
+}
+
+.CodeMirror-gutters {
+  background: var(--bg-elevated);
+  border-right: 1px solid var(--border);
+  padding-right: 4px;
+}
+
+.CodeMirror-linenumber {
+  color: var(--text-faint);
+  font-size: 12px;
+  padding: 0 8px 0 12px;
+}
+
+.CodeMirror-cursor {
+  border-left: 2px solid var(--primary) !important;
+}
+
+.CodeMirror-activeline-background {
+  background: var(--primary-soft) !important;
+}
+
+.CodeMirror-selected {
+  background: rgba(79, 70, 229, 0.18) !important;
+}
+
+body[data-theme="dark"] .CodeMirror-selected {
+  background: rgba(129, 140, 248, 0.25) !important;
+}
+
+/* ============================================================
+   编辑器语法着色
+   设计原则（克制、清晰、有层次）：
+   - 标题靠"字号梯度 + 字重 + 主色"形成层次，不用色块背景
+   - 加粗 / 斜体只改字重和字形，不改颜色，避免和标题、链接抢戏
+   - 格式化标记（# > * _ ` 等）统一淡化为 muted 色，让正文成为视觉主角
+   - 行内代码、公式用极小 padding 的浅色背景，不撑高行距
+   ============================================================ */
+
+/* 标题：纯色 + 字重 + 明显的字号梯度 */
+.CodeMirror .cm-header {
+  color: var(--syntax-heading);
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+.CodeMirror .cm-header-1 {
+  font-size: 1.55em;
+  line-height: 1.35;
+}
+
+.CodeMirror .cm-header-2 {
+  font-size: 1.32em;
+  line-height: 1.35;
+}
+
+.CodeMirror .cm-header-3 {
+  font-size: 1.16em;
+}
+
+.CodeMirror .cm-header-4 {
+  font-size: 1.08em;
+}
+
+.CodeMirror .cm-header-5,
+.CodeMirror .cm-header-6 {
+  font-size: 1em;
+}
+
+/* 格式化标记（# > * _ ` 等）整体淡化
+   注意：cm-formatting-header 同时具有 cm-header-N 类，
+   所以放在 cm-header 规则之后才能覆盖颜色和字重 */
+.CodeMirror .cm-formatting {
+  color: var(--syntax-formatting);
+  font-weight: 400;
+  opacity: 0.7;
+}
+
+.CodeMirror .cm-formatting-header {
+  color: var(--syntax-formatting);
+  font-weight: 400;
+  opacity: 0.55;
+}
+
+.CodeMirror .cm-meta {
+  color: var(--syntax-formatting);
+}
+
+/* 引用：用 muted 色 + 斜体，避免大块染色 */
+.CodeMirror .cm-quote {
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+/* 链接文字 / 图片描述 */
+.CodeMirror .cm-link,
+.CodeMirror .cm-image {
+  color: var(--syntax-link);
+  font-weight: 500;
+}
+
+/* URL 部分：偏色蓝绿 + 下划线 */
+.CodeMirror .cm-url {
+  color: var(--syntax-url);
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+  opacity: 0.85;
+}
+
+/* 加粗：只改字重，颜色继承正文（避免变成标题靛蓝色那种突兀效果） */
+.CodeMirror .cm-strong {
+  color: inherit;
+  font-weight: 700;
+}
+
+/* 斜体：只改字形，颜色继承正文 */
+.CodeMirror .cm-em {
+  color: inherit;
+  font-style: italic;
+}
+
+/* 删除线：用 muted 色（不要太淡到看不见）+ 划线 */
+.CodeMirror .cm-strikethrough {
+  color: var(--text-muted);
+  text-decoration: line-through;
+  text-decoration-thickness: 1px;
+}
+
+/* 行内代码（gfm 模式把它标为 cm-comment）
+   注意：fenced code 内的 JS/Python 注释也走 cm-comment，
+   所以这里的样式必须既适合"行内代码"又不破坏注释观感 ——
+   方案：极小 padding + 等宽字体 + 浅色背景 */
+.CodeMirror .cm-comment {
+  color: var(--syntax-code);
+  background: var(--syntax-code-bg);
+  border-radius: 3px;
+  padding: 0 3px;
+  font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.92em;
+}
+
+/* 数学公式：等宽 + 正常字色 */
+.CodeMirror .cm-math {
+  color: var(--text) !important;
+  background: transparent !important;
+  font-style: normal !important;
+  font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.95em;
+  text-decoration: none !important;
+}
+
+.CodeMirror .cm-math-delimiter {
+  color: var(--syntax-math-delim) !important;
+  font-weight: 700;
+}
+
+/* 水平分割线 --- */
+.CodeMirror .cm-hr {
+  color: var(--syntax-hr);
+  font-weight: 700;
+  letter-spacing: 0.15em;
+}
+
+/* 列表标记（- + * 1.）— markdown 模式标为 variable-2/3 */
+.CodeMirror .cm-variable-2,
+.CodeMirror .cm-variable-3 {
+  color: var(--syntax-list);
+  font-weight: 600;
+}
+
+/* fenced code 内部高亮（注入 inner mode 时使用） */
+.CodeMirror .cm-keyword,
+.CodeMirror .cm-operator {
+  color: var(--syntax-attribute);
+  font-weight: 600;
+}
+
+.CodeMirror .cm-string,
+.CodeMirror .cm-string-2 {
+  color: var(--syntax-quote);
+}
+
+.CodeMirror .cm-number,
+.CodeMirror .cm-atom {
+  color: var(--syntax-list);
+}
+
+.CodeMirror .cm-def,
+.CodeMirror .cm-builtin,
+.CodeMirror .cm-property {
+  color: var(--syntax-link);
+}
+
+.CodeMirror .cm-tag {
+  color: var(--syntax-tag);
+}
+
+.CodeMirror .cm-attribute,
+.CodeMirror .cm-qualifier {
+  color: var(--syntax-attribute);
+}
+
+.CodeMirror .cm-error {
+  color: var(--danger);
+  text-decoration: underline;
+  text-decoration-style: wavy;
+}
+
+/* ============================================================
+   分割线
+   ============================================================ */
+.splitter {
+  width: 6px;
+  background: transparent;
+  cursor: col-resize;
+  position: relative;
+  flex-shrink: 0;
+  transition: background-color 0.15s ease;
+}
+
+.splitter:hover,
+.splitter.dragging {
+  background: var(--primary-soft);
+}
+
+.splitter-handle {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 4px;
+  height: 40px;
+  border-radius: 2px;
+  background: var(--border-strong);
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+.splitter:hover .splitter-handle,
+.splitter.dragging .splitter-handle {
+  opacity: 1;
+}
+
+/* ============================================================
+   预览区：精排版
+   ============================================================ */
+.markdown-body {
+  padding: 40px 56px;
+  max-width: 860px;
+  margin: 0 auto;
+  font-size: 15px;
+  line-height: 1.75;
+  color: var(--text);
+  word-wrap: break-word;
+}
+
+.markdown-body > *:first-child {
+  margin-top: 0 !important;
+}
+
+.markdown-body > *:last-child {
+  margin-bottom: 0 !important;
+}
+
+.markdown-body h1,
+.markdown-body h2,
+.markdown-body h3,
+.markdown-body h4,
+.markdown-body h5,
+.markdown-body h6 {
+  margin: 1.6em 0 0.6em;
+  font-weight: 700;
+  letter-spacing: 0;
+  line-height: 1.3;
+}
+
+.markdown-body h1 {
+  font-size: 2em;
+  padding-bottom: 0.3em;
+  border-bottom: 1px solid var(--border);
+}
+
+.markdown-body h2 {
+  font-size: 1.5em;
+  padding-bottom: 0.3em;
+  border-bottom: 1px solid var(--border);
+}
+
+.markdown-body h3 {
+  font-size: 1.25em;
+}
+
+.markdown-body h4 {
+  font-size: 1em;
+}
+
+.markdown-body p {
+  margin: 0.8em 0;
+}
+
+.markdown-body a {
+  color: var(--primary);
+  text-decoration: none;
+  border-bottom: 1px solid transparent;
+  transition: border-color 0.15s ease;
+}
+
+.markdown-body a:hover {
+  border-bottom-color: var(--primary);
+}
+
+.markdown-body strong {
+  font-weight: 700;
+}
+
+.markdown-body em {
+  font-style: italic;
+}
+
+.markdown-body ul,
+.markdown-body ol {
+  margin: 0.8em 0;
+  padding-left: 1.8em;
+}
+
+.markdown-body li {
+  margin: 0.3em 0;
+}
+
+.markdown-body li > ul,
+.markdown-body li > ol {
+  margin: 0.3em 0;
+}
+
+.markdown-body blockquote {
+  margin: 1em 0;
+  padding: 0.4em 1em;
+  color: var(--text-muted);
+  border-left: 4px solid var(--primary);
+  background: var(--primary-soft);
+  border-radius: 0 6px 6px 0;
+}
+
+.markdown-body blockquote > *:first-child {
+  margin-top: 0;
+}
+
+.markdown-body blockquote > *:last-child {
+  margin-bottom: 0;
+}
+
+/* 行内代码 */
+.markdown-body code {
+  font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.88em;
+  padding: 2px 6px;
+  background: var(--code-bg);
+  border: 1px solid var(--code-border);
+  border-radius: 4px;
+}
+
+/* 代码块 */
+.markdown-body pre {
+  margin: 1em 0;
+  background: var(--code-bg);
+  border: 1px solid var(--code-border);
+  border-radius: 8px;
+  overflow: hidden;
+  position: relative;
+}
+
+.markdown-body pre code {
+  display: block;
+  padding: 16px 18px;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  font-size: 13px;
+  line-height: 1.6;
+  overflow-x: auto;
+}
+
+/* 代码块右上角的语言标签 + 复制按钮 */
+.code-block-wrapper {
+  position: relative;
+}
+
+.code-block-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 14px;
+  background: var(--bg-subtle);
+  border-bottom: 1px solid var(--code-border);
+  font-size: 11px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0;
+  font-weight: 600;
+}
+
+.copy-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  font-size: 11px;
+  color: var(--text-muted);
+  border-radius: 4px;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.copy-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.copy-btn svg {
+  width: 12px;
+  height: 12px;
+}
+
+/* 表格 */
+.markdown-body table {
+  width: 100%;
+  margin: 1em 0;
+  border-collapse: collapse;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.markdown-body table th,
+.markdown-body table td {
+  padding: 8px 14px;
+  text-align: left;
+  border: 1px solid var(--border);
+}
+
+.markdown-body table th {
+  background: var(--bg-subtle);
+  font-weight: 600;
+}
+
+.markdown-body table tr:nth-child(even) td {
+  background: var(--bg-subtle);
+}
+
+/* 分割线 */
+.markdown-body hr {
+  margin: 2em 0;
+  border: none;
+  border-top: 1px solid var(--border);
+}
+
+/* 图片 */
+.markdown-body img {
+  max-width: 100%;
+  border-radius: 6px;
+  box-shadow: var(--shadow-sm);
+}
+
+/* 任务列表 */
+.markdown-body input[type="checkbox"] {
+  margin-right: 6px;
+}
+
+/* Mermaid 图表容器 */
+.markdown-body .mermaid {
+  margin: 1em 0;
+  padding: 16px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  text-align: center;
+  overflow-x: auto;
+}
+
+/* KaTeX 公式 */
+.markdown-body .katex {
+  font-size: 1.05em;
+}
+
+.markdown-body .katex-display {
+  margin: 1em 0;
+  padding: 12px 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+/* ============================================================
+   底部状态栏
+   ============================================================ */
+.statusbar {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  height: 32px;
+  padding: 0 20px;
+  font-size: 12px;
+  color: var(--text-muted);
+  background: var(--bg-elevated);
+  border-top: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.status-left {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+}
+
+.status-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.status-item strong {
+  color: var(--text);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ============================================================
+   Toast 通知
+   ============================================================ */
+.toast-container {
+  position: fixed;
+  bottom: 48px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  z-index: 100;
+  pointer-events: none;
+}
+
+.toast {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 18px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: var(--shadow-lg);
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text);
+  pointer-events: auto;
+  animation: toast-in 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.toast.toast-out {
+  animation: toast-out 0.2s ease forwards;
+}
+
+.toast svg {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+}
+
+.toast.success svg {
+  color: var(--accent);
+}
+
+.toast.error svg {
+  color: var(--danger);
+}
+
+.toast.info svg {
+  color: var(--primary);
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes toast-out {
+  to {
+    opacity: 0;
+    transform: translateY(20px);
+  }
+}
+
+/* ============================================================
+   滚动条美化
+   ============================================================ */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: 6px;
+  border: 2px solid var(--bg-elevated);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-faint);
+}
+
+/* ============================================================
+   响应式：窄屏改为上下布局
+   ============================================================ */
+@media (max-width: 768px) {
+  .toolbar {
+    padding: 0 12px;
+    height: 52px;
+  }
+
+  .toolbar-center {
+    gap: 2px;
+  }
+
+  .btn span {
+    display: none;
+  }
+
+  .btn {
+    padding: 7px 9px;
+  }
+
+  .logo-text {
+    display: none;
+  }
+
+  .workspace {
+    flex-direction: column;
+  }
+
+  .document-sidebar {
+    flex: 0 0 156px;
+    width: auto;
+    min-width: 0;
+    max-width: none;
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .document-sidebar-resizer {
+    display: none;
+  }
+
+  .document-sidebar-header {
+    min-height: 52px;
+    padding: 8px 12px;
+  }
+
+  .document-list {
+    display: flex;
+    gap: 8px;
+    padding: 8px 12px 10px;
+    overflow-x: auto;
+    overflow-y: hidden;
+  }
+
+  .document-item {
+    flex: 0 0 220px;
+    margin-top: 0;
+  }
+
+  .document-item + .document-item {
+    margin-top: 0;
+  }
+
+  .document-delete {
+    opacity: 1;
+  }
+
+  .pane-editor {
+    flex: 1;
+  }
+
+  .pane-preview {
+    flex: 1;
+    border-left: none;
+    border-top: 1px solid var(--border);
+  }
+
+  .splitter {
+    display: none;
+  }
+
+  .markdown-body {
+    padding: 20px;
+  }
+}

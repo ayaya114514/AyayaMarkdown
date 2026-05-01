@@ -1,0 +1,16 @@
+# macOS
+.DS_Store
+
+# 编辑器
+.vscode/
+.idea/
+*.swp
+
+# 日志
+*.log
+
+# 依赖（本项目纯 CDN，但保险起见）
+node_modules/
+
+# Vercel
+.vercel
