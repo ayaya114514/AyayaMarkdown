@@ -509,6 +509,84 @@ body.sidebar-collapsed .document-sidebar-resizer {
   flex-shrink: 0;
 }
 
+/* 编辑器格式化工具栏（在编辑面板的 pane-header 右侧） */
+.editor-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  /* 工具栏按钮多，窄屏时让它能横向滚动而不是把 pane-title 挤掉 */
+  overflow-x: auto;
+  scrollbar-width: none;
+  flex: 1;
+  justify-content: flex-end;
+  margin-left: 12px;
+}
+
+.editor-toolbar::-webkit-scrollbar {
+  display: none;
+}
+
+.editor-tool-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-muted);
+  border-radius: 5px;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+  flex-shrink: 0;
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 1;
+}
+
+.editor-tool-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+  border-color: var(--border);
+}
+
+.editor-tool-btn:active {
+  background: var(--primary-soft);
+  color: var(--primary);
+}
+
+.editor-tool-btn svg {
+  width: 14px;
+  height: 14px;
+}
+
+.editor-tool-text {
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.editor-tool-bold {
+  font-weight: 800;
+}
+
+.editor-tool-italic {
+  font-style: italic;
+}
+
+.editor-tool-strike {
+  text-decoration: line-through;
+}
+
+.editor-tool-divider {
+  display: inline-block;
+  width: 1px;
+  height: 14px;
+  background: var(--border);
+  margin: 0 4px;
+  flex-shrink: 0;
+}
+
 .pane-title {
   display: flex;
   align-items: center;

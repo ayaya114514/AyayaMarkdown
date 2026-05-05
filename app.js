@@ -201,36 +201,21 @@ sequenceDiagram
   applySidebarState(isSidebarCollapsed());
 
   /* =============================================================
-   * 2. 主题管理
-   * 把当前主题存到 localStorage，刷新后保持选择
+   * 2. 主题：只保留深色（之前支持明暗切换，现已精简为单一深色）
    * ============================================================= */
-  const THEME_KEY = "md-editor-theme";
+  function applyTheme() {
+    document.body.setAttribute("data-theme", "dark");
 
-  function getInitialTheme() {
-    const saved = localStorage.getItem(THEME_KEY);
-    if (saved === "light" || saved === "dark") return saved;
-    // 跟随系统
-    return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
-  }
-
-  function applyTheme(theme) {
-    document.body.setAttribute("data-theme", theme);
-    localStorage.setItem(THEME_KEY, theme);
-
-    // 切换 highlight.js 主题样式表
-    document.getElementById("hljs-theme-light").disabled = theme === "dark";
-    document.getElementById("hljs-theme-dark").disabled = theme === "light";
-
-    // 切换 CodeMirror 主题（仅在已初始化后）
+    // CodeMirror 主题（仅在已初始化后）
     if (window.cm) {
-      window.cm.setOption("theme", theme === "dark" ? "material-darker" : "default");
+      window.cm.setOption("theme", "material-darker");
     }
 
     // Mermaid 主题（重新初始化后需要重渲染）
     if (window.mermaid) {
       window.mermaid.initialize({
         startOnLoad: false,
-        theme: theme === "dark" ? "dark" : "default",
+        theme: "dark",
         securityLevel: "loose",
         fontFamily: "Inter, sans-serif",
       });
@@ -239,12 +224,9 @@ sequenceDiagram
     }
   }
 
-  applyTheme(getInitialTheme());
-
-  $("#btn-theme").addEventListener("click", () => {
-    const next = document.body.getAttribute("data-theme") === "dark" ? "light" : "dark";
-    applyTheme(next);
-  });
+  applyTheme();
+  // 清理历史 localStorage 里的主题 key（旧版本残留）
+  localStorage.removeItem("md-editor-theme");
 
   /* =============================================================
    * 3. marked 配置：开启 GFM、自动换行、代码高亮
@@ -597,6 +579,85 @@ sequenceDiagram
   const ACTIVE_DOCUMENT_KEY = "md-editor-active-document";
   const LEGACY_DRAFT_KEY = "md-editor-draft";
 
+  /* ---------- IndexedDB 存储层 ----------
+   * 文档内容（可能很大，包含代码块/Mermaid/将来可能粘贴的图片）放 IndexedDB；
+   * UI 状态（主题、侧边栏宽度、当前激活 docId）继续放 localStorage —— 都是几十字节的小数据，
+   * 同步读写更顺手，也不会撞上配额。
+   *
+   * 历史包袱：旧版本把整个 documents 数组塞 localStorage（5-10 MB 上限），
+   * 文档稍多就容易写入失败。这里启动时一次性迁移到 IDB 后删除老 key。
+   */
+  const IDB_NAME = "ayaya-markdown";
+  const IDB_VERSION = 1;
+  const IDB_STORE = "documents";
+  let idbPromise = null;
+
+  function openIdb() {
+    if (idbPromise) return idbPromise;
+    idbPromise = new Promise((resolve, reject) => {
+      if (!window.indexedDB) {
+        reject(new Error("当前浏览器不支持 IndexedDB"));
+        return;
+      }
+      const req = indexedDB.open(IDB_NAME, IDB_VERSION);
+      req.onupgradeneeded = (e) => {
+        const db = e.target.result;
+        if (!db.objectStoreNames.contains(IDB_STORE)) {
+          // keyPath 用 doc.id；后续写入直接 put 即可
+          db.createObjectStore(IDB_STORE, { keyPath: "id" });
+        }
+      };
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+    return idbPromise;
+  }
+
+  async function idbReadAll() {
+    const db = await openIdb();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(IDB_STORE, "readonly");
+      const req = tx.objectStore(IDB_STORE).getAll();
+      req.onsuccess = () => resolve(req.result || []);
+      req.onerror = () => reject(req.error);
+    });
+  }
+
+  // 整库覆盖写：实现简单且 IDB 内部会把这些操作放在同一个事务里，原子完成。
+  // 单文档量级（即便几十个长文档）下性能完全够，没必要做增量。
+  async function idbWriteAll(docs) {
+    const db = await openIdb();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(IDB_STORE, "readwrite");
+      const store = tx.objectStore(IDB_STORE);
+      store.clear();
+      docs.forEach((doc) => store.put(doc));
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+      tx.onabort = () => reject(tx.error);
+    });
+  }
+
+  // 估算本地存储用量；Chrome/Firefox 实测 quota 一般是磁盘空闲的几十 %，
+  // 但用户开了大量文档/粘贴大图后还是有可能告急。超 80% 给个提示让用户感知。
+  async function checkStorageQuota() {
+    if (!navigator.storage || !navigator.storage.estimate) return;
+    try {
+      const { usage, quota } = await navigator.storage.estimate();
+      if (!quota) return;
+      const ratio = usage / quota;
+      if (ratio > 0.8) {
+        const usedMB = Math.round(usage / 1024 / 1024);
+        showToast(
+          `本地存储已用 ${Math.round(ratio * 100)}%（约 ${usedMB} MB），建议导出备份`,
+          "info"
+        );
+      }
+    } catch (_) {
+      // estimate 偶尔会拒绝（比如 file:// 协议下），静默忽略即可
+    }
+  }
+
   function makeDocumentId() {
     return `doc-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
   }
@@ -648,7 +709,8 @@ sequenceDiagram
     };
   }
 
-  function readStoredDocuments() {
+  // 读取旧版本写在 localStorage 里的文档（仅迁移用，迁移完即删掉老 key）
+  function readLegacyLocalStorageDocuments() {
     try {
       const raw = localStorage.getItem(DOCUMENTS_KEY);
       if (!raw) return [];
@@ -661,18 +723,42 @@ sequenceDiagram
         .filter((doc) => doc && typeof doc === "object" && doc.id)
         .map((doc) => createDocumentRecord(doc));
     } catch (e) {
-      console.warn("读取文档列表失败:", e);
+      console.warn("读取旧 localStorage 文档列表失败:", e);
       return [];
     }
   }
 
-  function initializeDocuments() {
-    documents = readStoredDocuments();
+  async function initializeDocuments() {
+    // 1) 优先从 IndexedDB 读
+    let loaded = [];
+    try {
+      const raw = await idbReadAll();
+      loaded = raw.map((doc) => createDocumentRecord(doc));
+    } catch (e) {
+      console.warn("IndexedDB 读取失败:", e);
+    }
 
-    if (!documents.length) {
+    // 2) IDB 空，尝试迁移老版本写在 localStorage 里的 documents
+    if (!loaded.length) {
+      const legacy = readLegacyLocalStorageDocuments();
+      if (legacy.length) {
+        loaded = legacy;
+        try {
+          await idbWriteAll(loaded);
+          // 迁移成功才删 localStorage 里的老数据，失败保留以便下次重试
+          localStorage.removeItem(DOCUMENTS_KEY);
+          console.log("[AyayaMarkdown] 已从 localStorage 迁移文档到 IndexedDB");
+        } catch (e) {
+          console.warn("迁移到 IndexedDB 失败，保留 localStorage 中的副本:", e);
+        }
+      }
+    }
+
+    // 3) 还是空，使用更早期的 LEGACY_DRAFT 或默认欢迎文档
+    if (!loaded.length) {
       const legacyDraft = localStorage.getItem(LEGACY_DRAFT_KEY);
       const content = legacyDraft && legacyDraft.length > 0 ? legacyDraft : DEFAULT_DOC;
-      documents = [
+      loaded = [
         createDocumentRecord({
           title: legacyDraft ? inferDocumentTitle(legacyDraft) : "欢迎文档",
           content,
@@ -680,29 +766,43 @@ sequenceDiagram
         }),
       ];
       localStorage.removeItem(LEGACY_DRAFT_KEY);
+      try {
+        await idbWriteAll(loaded);
+      } catch (_) {
+        // 即便首次写失败也不影响进入界面，后续 persistDocuments 还会重试
+      }
     }
+
+    documents = loaded;
 
     const storedActiveId = localStorage.getItem(ACTIVE_DOCUMENT_KEY);
     activeDocId = documents.some((doc) => doc.id === storedActiveId)
       ? storedActiveId
       : documents[0].id;
-    persistDocuments();
+    localStorage.setItem(ACTIVE_DOCUMENT_KEY, activeDocId);
   }
 
   function getActiveDocument() {
     return documents.find((doc) => doc.id === activeDocId) || documents[0] || null;
   }
 
-  function persistDocuments(showError = false) {
+  // 把文档写入 IndexedDB；调用方一般 fire-and-forget（不 await），
+  // IDB 自身的事务队列会保证写入顺序，错误统一在内部 toast 提示。
+  //
+  // 副作用：activeDocId 同步写到 localStorage（小数据，不进 IDB）。
+  // 注意：beforeunload 里调用时 IDB 写可能完成不了，所以 change → IDB 的防抖间隔
+  //      要短一点（saveTimer 那边设的 500ms），权衡了一下没改，关页面最多丢半秒输入。
+  async function persistDocuments(showError = false) {
+    if (activeDocId) localStorage.setItem(ACTIVE_DOCUMENT_KEY, activeDocId);
     try {
-      localStorage.setItem(DOCUMENTS_KEY, JSON.stringify({ version: 1, documents }));
-      if (activeDocId) localStorage.setItem(ACTIVE_DOCUMENT_KEY, activeDocId);
+      await idbWriteAll(documents);
       storageFailureShown = false;
       return true;
     } catch (e) {
-      console.warn("保存文档列表失败:", e);
+      console.warn("保存文档列表到 IndexedDB 失败:", e);
       if (showError || !storageFailureShown) {
         showToast("文档保存失败，可能是浏览器本地空间不足", "error");
+        checkStorageQuota();
       }
       storageFailureShown = true;
       return false;
@@ -940,6 +1040,49 @@ sequenceDiagram
     showToast(`已导出 ${title}.html`, "success");
   }
 
+  function exportPdf() {
+    flushCurrentDocument();
+    const md = cm.getValue();
+    if (!md.trim()) {
+      showToast("内容为空，无法导出", "error");
+      return;
+    }
+    // 思路：用浏览器自带的"打印为 PDF"。
+    // 把已经渲染好的预览 HTML 塞进新窗口（连带 KaTeX/highlight.js 的 CSS），
+    // 等样式加载好后调 print()，用户在打印对话框里选「另存为 PDF」即可。
+    // 这样做的好处：中文/公式/Mermaid 渲染保真度高，无需引入新依赖。
+    const bodyHtml = previewEl.innerHTML;
+    const title = inferFilename(md, getActiveDocument()?.title);
+    const fullHtml = buildExportableHtml(title, bodyHtml);
+
+    const win = window.open("", "_blank");
+    if (!win) {
+      showToast("浏览器拦截了弹窗，请允许弹窗后重试", "error");
+      return;
+    }
+    win.document.open();
+    win.document.write(fullHtml);
+    win.document.close();
+
+    // 等外部 CSS 加载完再 print，避免样式还没生效就出 PDF
+    const triggerPrint = () => {
+      setTimeout(() => {
+        try {
+          win.focus();
+          win.print();
+        } catch (e) {
+          console.warn("打印失败:", e);
+        }
+      }, 300);
+    };
+    if (win.document.readyState === "complete") {
+      triggerPrint();
+    } else {
+      win.addEventListener("load", triggerPrint, { once: true });
+    }
+    showToast("已打开打印窗口，请在弹窗里选「另存为 PDF」", "info");
+  }
+
   function stripFileExtension(filename) {
     return String(filename || "").replace(/\.(md|markdown|txt)$/i, "");
   }
@@ -1129,6 +1272,109 @@ ${bodyHtml}
   });
 
   /* =============================================================
+   * 11.5 编辑器格式化工具栏
+   *
+   * 三类操作：
+   *   - 行内包裹（粗体/斜体/代码等）：wrapSelection
+   *   - 行首前缀（标题/引用/列表）：togglePrefix（多行选区按行处理；二次点击撤销）
+   *   - 块级插入（代码块/表格/分隔线/图片）：insertBlock
+   * 全部用 cm.operation 包一下，保证 undo 是一步。
+   * ============================================================= */
+  function wrapSelection(prefix, suffix, placeholder) {
+    suffix = suffix === undefined ? prefix : suffix;
+    placeholder = placeholder || "";
+    cm.operation(() => {
+      if (cm.somethingSelected()) {
+        const selections = cm.getSelections();
+        cm.replaceSelections(selections.map((sel) => prefix + sel + suffix));
+      } else {
+        const cursor = cm.getCursor();
+        cm.replaceRange(prefix + placeholder + suffix, cursor);
+        if (placeholder) {
+          cm.setSelection(
+            { line: cursor.line, ch: cursor.ch + prefix.length },
+            { line: cursor.line, ch: cursor.ch + prefix.length + placeholder.length }
+          );
+        } else {
+          cm.setCursor({ line: cursor.line, ch: cursor.ch + prefix.length });
+        }
+      }
+    });
+    cm.focus();
+  }
+
+  // 给当前行（或选区涉及的每一行）加前缀；如果该行已带前缀就移除，等于切换。
+  function togglePrefix(prefix) {
+    cm.operation(() => {
+      // listSelections() 即便没选区也会返回一个零宽 Range（anchor === head），
+      // 调用 from()/to() 都拿到光标位置，不需要再合成对象。
+      const ranges = cm.listSelections();
+      // 收集所有涉及的行号（去重）
+      const lineNums = new Set();
+      ranges.forEach((range) => {
+        const from = range.from();
+        const to = range.to();
+        for (let l = from.line; l <= to.line; l++) lineNums.add(l);
+      });
+      [...lineNums].forEach((line) => {
+        const text = cm.getLine(line) || "";
+        if (text.startsWith(prefix)) {
+          cm.replaceRange("", { line, ch: 0 }, { line, ch: prefix.length });
+        } else {
+          cm.replaceRange(prefix, { line, ch: 0 });
+        }
+      });
+    });
+    cm.focus();
+  }
+
+  // 在光标处插入一个独立块；自动保证前后各有一个空行
+  function insertBlock(text) {
+    cm.operation(() => {
+      const cursor = cm.getCursor();
+      const lineText = cm.getLine(cursor.line) || "";
+      const before = cursor.line === 0 && lineText === "" ? "" : (lineText.length > 0 ? "\n\n" : "\n");
+      const insertText = before + text + "\n";
+      cm.replaceRange(insertText, cursor);
+    });
+    cm.focus();
+  }
+
+  function applyToolbarAction(action) {
+    if (!cm) return;
+    switch (action) {
+      case "undo": cm.undo(); cm.focus(); break;
+      case "redo": cm.redo(); cm.focus(); break;
+      case "h1": togglePrefix("# "); break;
+      case "h2": togglePrefix("## "); break;
+      case "h3": togglePrefix("### "); break;
+      case "bold": wrapSelection("**", "**", "粗体"); break;
+      case "italic": wrapSelection("*", "*", "斜体"); break;
+      case "strike": wrapSelection("~~", "~~", "删除线"); break;
+      case "code": wrapSelection("`", "`", "代码"); break;
+      case "link": wrapSelection("[", "](https://)", "链接文本"); break;
+      case "image": wrapSelection("![", "](https://)", "图片描述"); break;
+      case "quote": togglePrefix("> "); break;
+      case "ul": togglePrefix("- "); break;
+      case "ol": togglePrefix("1. "); break;
+      case "task": togglePrefix("- [ ] "); break;
+      case "codeblock": insertBlock("```\n代码\n```"); break;
+      case "table":
+        insertBlock("| 列1 | 列2 | 列3 |\n| --- | --- | --- |\n| A   | B   | C   |");
+        break;
+      case "hr": insertBlock("---"); break;
+    }
+  }
+
+  // 事件委托：所有带 data-md-action 的按钮共用一个 click 监听
+  document.querySelector(".editor-toolbar")?.addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-md-action]");
+    if (!btn) return;
+    e.preventDefault();
+    applyToolbarAction(btn.dataset.mdAction);
+  });
+
+  /* =============================================================
    * 12. 工具栏按钮绑定
    * ============================================================= */
   $("#btn-new").addEventListener("click", newDocument);
@@ -1137,44 +1383,62 @@ ${bodyHtml}
   $("#btn-open-sidebar").addEventListener("click", openFile);
   $("#btn-export-md").addEventListener("click", exportMarkdown);
   $("#btn-export-html").addEventListener("click", exportHtml);
+  $("#btn-export-pdf").addEventListener("click", exportPdf);
 
   /* =============================================================
    * 13. 启动：加载文档列表，开始监听编辑事件
+   *
+   * IndexedDB 读是异步的，所以这里整体放进 Promise 链：
+   * 等文档加载完成后再把内容塞进编辑器、绑定 change 监听。
    * ============================================================= */
-  initializeDocuments();
-  loadActiveDocumentIntoEditor();
+  initializeDocuments()
+    .catch((e) => {
+      console.error("文档初始化失败:", e);
+      showToast("文档加载失败，请检查浏览器隐私模式或刷新重试", "error");
+      // 兜底：至少给一个空文档让界面能用
+      if (!documents.length) {
+        documents = [createDocumentRecord({ title: "未命名文档", content: "" })];
+        activeDocId = documents[0].id;
+      }
+    })
+    .then(() => {
+      loadActiveDocumentIntoEditor();
 
-  // change 事件触发两条独立路径：
-  //   - 统计立即更新（无防抖，输入时数字实时跳动）
-  //   - 当前文档写入内存并防抖保存到 localStorage
-  //   - 预览走防抖（120ms 后渲染，避免大文档卡顿）
-  cm.on("change", () => {
-    const value = cm.getValue();
-    try {
-      updateStats(value);
-    } catch (e) {
-      console.error("updateStats failed:", e);
-    }
-    if (!isLoadingDocument) {
-      queueCurrentDocumentSave(value);
-    }
-    schedulePreview();
-  });
+      // change 事件触发三条独立路径：
+      //   - 统计立即更新（无防抖，输入时数字实时跳动）
+      //   - 当前文档写入内存并防抖保存到 IndexedDB
+      //   - 预览走防抖（120ms 后渲染，避免大文档卡顿）
+      cm.on("change", () => {
+        const value = cm.getValue();
+        try {
+          updateStats(value);
+        } catch (e) {
+          console.error("updateStats failed:", e);
+        }
+        if (!isLoadingDocument) {
+          queueCurrentDocumentSave(value);
+        }
+        schedulePreview();
+      });
 
-  // 首次：立即更新统计 + 安排首次渲染
-  try {
-    updateStats(cm.getValue());
-  } catch (e) {
-    console.error("initial updateStats failed:", e);
-  }
-  schedulePreview();
+      // 首次：立即更新统计 + 安排首次渲染
+      try {
+        updateStats(cm.getValue());
+      } catch (e) {
+        console.error("initial updateStats failed:", e);
+      }
+      schedulePreview();
 
-  // 启动后把预览滚到顶部：避免 KaTeX/Mermaid 异步渲染过程中
-  // 浏览器为了"保持视觉位置"而把滚动条停在中段
-  setTimeout(() => {
-    const previewBody = document.querySelector(".pane-preview .pane-body");
-    if (previewBody) previewBody.scrollTop = 0;
-  }, 300);
+      // 启动后把预览滚到顶部：避免 KaTeX/Mermaid 异步渲染过程中
+      // 浏览器为了"保持视觉位置"而把滚动条停在中段
+      setTimeout(() => {
+        const previewBody = document.querySelector(".pane-preview .pane-body");
+        if (previewBody) previewBody.scrollTop = 0;
+      }, 300);
 
-  console.log("[AyayaMarkdown] 初始化完成");
+      // 启动后检查一次本地存储用量
+      checkStorageQuota();
+
+      console.log("[AyayaMarkdown] 初始化完成");
+    });
 })();
