@@ -558,16 +558,17 @@ body.sidebar-collapsed .document-sidebar-resizer {
   display: flex;
   align-items: center;
   gap: 2px;
-  /* 工具栏按钮多，窄屏时让它能横向滚动而不是把 pane-title 挤掉 */
-  overflow-x: auto;
-  scrollbar-width: none;
+  /* 不再横向滚动：溢出的按钮由 JS 折叠进 .editor-tool-popup 下拉里 */
+  overflow: visible;
   flex: 1;
+  min-width: 0;
   justify-content: flex-end;
   margin-left: 12px;
 }
 
-.editor-toolbar::-webkit-scrollbar {
-  display: none;
+/* JS 测算后给放不下的元素加上这个属性来隐藏；初始挂在「更多」按钮上 */
+.editor-toolbar [data-overflow-hidden] {
+  display: none !important;
 }
 
 .editor-tool-btn {
@@ -629,6 +630,70 @@ body.sidebar-collapsed .document-sidebar-resizer {
   background: var(--border);
   margin: 0 4px;
   flex-shrink: 0;
+}
+
+/* 「更多」按钮 + 下拉容器：position: relative 让 popup 相对它定位 */
+.editor-tool-more-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.editor-tool-more.is-open {
+  background: var(--bg-hover);
+  color: var(--text);
+  border-color: var(--border);
+}
+
+/* 下拉面板：竖排显示被折叠的工具按钮，点中后等价于点原按钮 */
+.editor-tool-popup {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  min-width: 160px;
+  max-height: 60vh;
+  overflow-y: auto;
+  padding: 4px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  z-index: 50;
+}
+
+.editor-tool-popup[hidden] {
+  display: none;
+}
+
+/* 下拉里的按钮改为左对齐、占满整行，并把 title 当文字标签显示 */
+.editor-tool-popup .editor-tool-btn {
+  width: 100%;
+  height: auto;
+  min-height: 28px;
+  padding: 6px 10px;
+  justify-content: flex-start;
+  gap: 10px;
+  font-size: 12.5px;
+  color: var(--text);
+  white-space: nowrap;
+}
+
+.editor-tool-popup .editor-tool-btn::after {
+  content: attr(data-label);
+  font-weight: 500;
+  letter-spacing: 0;
+  font-style: normal;
+  text-decoration: none;
+  color: var(--text);
+}
+
+/* 下拉里不显示分隔线（横竖混排不好看，直接隐藏） */
+.editor-tool-popup .editor-tool-divider {
+  display: none;
 }
 
 .pane-title {

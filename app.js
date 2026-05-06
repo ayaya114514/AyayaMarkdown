@@ -1543,12 +1543,168 @@ ${bodyHtml}
   }
 
   // 事件委托：所有带 data-md-action 的按钮共用一个 click 监听
+  // popup 在工具栏内部，所以下拉里点按钮也走这同一条
   document.querySelector(".editor-toolbar")?.addEventListener("click", (e) => {
     const btn = e.target.closest("[data-md-action]");
     if (!btn) return;
     e.preventDefault();
     applyToolbarAction(btn.dataset.mdAction);
+    // 在下拉里点了某个按钮，顺手关闭下拉
+    closeToolbarOverflowPopup();
   });
+
+  /* =============================================================
+   * 11.5 工具栏溢出折叠
+   *
+   * 编辑面板宽度由用户拖 splitter 决定，可能很窄。这里在每次宽度
+   * 变化时重新测算：
+   *   - 工具栏放得下所有按钮 → 隐藏「更多」按钮，下拉清空
+   *   - 放不下 → 显示「更多」按钮，从最左侧开始把按钮挪进下拉，
+   *     直到剩下的能塞进可见宽度
+   *
+   * 因为按钮们都是 right-aligned（justify-content: flex-end），
+   * 视觉上是右侧优先保留，左侧（最先在 DOM 里出现的）先被折叠。
+   * ============================================================= */
+  const editorToolbarEl = document.querySelector(".editor-toolbar");
+  const moreWrapEl = editorToolbarEl?.querySelector(".editor-tool-more-wrap");
+  const moreBtnEl = document.getElementById("btn-toolbar-more");
+  const overflowPopupEl = document.getElementById("editor-tool-popup");
+
+  // 给每个按钮算一个用于下拉里显示的中文标签：
+  //   - 优先用 title（"一级标题"/"粗体" 等）
+  //   - 退化用 textContent
+  // 用 dataset.label 缓存，避免每次重排都重新读 DOM
+  function ensureToolbarItemLabels() {
+    if (!editorToolbarEl) return;
+    editorToolbarEl.querySelectorAll("[data-md-action]").forEach((btn) => {
+      if (btn.dataset.label) return;
+      const label = (btn.getAttribute("title") || btn.textContent || "").trim();
+      btn.dataset.label = label;
+    });
+  }
+
+  function closeToolbarOverflowPopup() {
+    if (!overflowPopupEl || overflowPopupEl.hidden) return;
+    overflowPopupEl.hidden = true;
+    moreBtnEl?.classList.remove("is-open");
+    moreBtnEl?.setAttribute("aria-expanded", "false");
+  }
+
+  function openToolbarOverflowPopup() {
+    if (!overflowPopupEl) return;
+    overflowPopupEl.hidden = false;
+    moreBtnEl?.classList.add("is-open");
+    moreBtnEl?.setAttribute("aria-expanded", "true");
+  }
+
+  // 重排核心：测量当前工具栏的可见宽度，决定哪些按钮要进下拉
+  //
+  // 工具栏是 justify-content: flex-end（按钮整体右对齐）。当内容比容器宽时，
+  // 溢出发生在「左侧」（最先在 DOM 里出现的按钮被挤到容器左边以外）。
+  // scrollWidth 只测「右侧」溢出，这里测不出，所以改用：
+  //   最左侧可见项的 left 坐标 < 工具栏 left 坐标 → 已溢出
+  function layoutEditorToolbar() {
+    if (!editorToolbarEl || !moreWrapEl || !overflowPopupEl) return;
+    ensureToolbarItemLabels();
+
+    // 收集除「更多」按钮以外的所有原生子元素（按钮 + 分隔线）
+    const items = Array.from(editorToolbarEl.children).filter(
+      (c) => c !== moreWrapEl
+    );
+
+    // 第一步：全部恢复显示，「更多」先藏起来，看是否本身就放得下
+    items.forEach((it) => it.removeAttribute("data-overflow-hidden"));
+    moreWrapEl.setAttribute("data-overflow-hidden", "");
+    overflowPopupEl.innerHTML = "";
+
+    // 用 1px 的容差兼容亚像素布局，避免 0.5px 误差导致死循环抖动
+    const isOverflowing = () => {
+      const tbLeft = editorToolbarEl.getBoundingClientRect().left;
+      // 找到第一个还显示着的 item，比它的 left 和容器 left
+      for (const it of items) {
+        if (it.hasAttribute("data-overflow-hidden")) continue;
+        return it.getBoundingClientRect().left < tbLeft - 1;
+      }
+      return false;
+    };
+
+    if (!isOverflowing()) {
+      closeToolbarOverflowPopup();
+      return;
+    }
+
+    // 放不下：先把「更多」按钮显示出来（它本身要占一格宽度，会让溢出更严重）
+    moreWrapEl.removeAttribute("data-overflow-hidden");
+
+    // 从最左侧开始一个一个隐藏，直到剩下的内容 + 「更多」按钮能塞下
+    const hidden = [];
+    for (let i = 0; i < items.length; i++) {
+      if (!isOverflowing()) break;
+      items[i].setAttribute("data-overflow-hidden", "");
+      hidden.push(items[i]);
+    }
+
+    // 收尾：如果第一个可见元素是分隔线，把它也藏掉，免得开头突兀
+    for (let i = hidden.length; i < items.length; i++) {
+      if (items[i].classList.contains("editor-tool-divider")) {
+        items[i].setAttribute("data-overflow-hidden", "");
+        hidden.push(items[i]);
+      } else {
+        break;
+      }
+    }
+
+    // 把被折叠的按钮（跳过分隔线）克隆进下拉里。克隆出来的节点也带
+    // data-md-action，所以共用工具栏上的事件委托即可触发同样的动作。
+    const popupItems = hidden.filter((it) => it.hasAttribute("data-md-action"));
+    popupItems.forEach((item) => {
+      const clone = item.cloneNode(true);
+      clone.removeAttribute("data-overflow-hidden");
+      overflowPopupEl.appendChild(clone);
+    });
+
+    // 折叠后没有任何按钮被收进下拉（极端情况：只有分隔线被藏了），
+    // 那「更多」按钮也没必要显示
+    if (popupItems.length === 0) {
+      moreWrapEl.setAttribute("data-overflow-hidden", "");
+      closeToolbarOverflowPopup();
+    }
+  }
+
+  // 「更多」按钮：切换下拉显隐。注意阻止冒泡，否则会被下面的 document
+  // 监听认成"外部点击"立刻关掉
+  moreBtnEl?.addEventListener("click", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (overflowPopupEl?.hidden) {
+      openToolbarOverflowPopup();
+    } else {
+      closeToolbarOverflowPopup();
+    }
+  });
+
+  // 点下拉外面 / 按 Esc 都关闭下拉
+  document.addEventListener("click", (e) => {
+    if (!overflowPopupEl || overflowPopupEl.hidden) return;
+    if (moreWrapEl?.contains(e.target)) return;
+    closeToolbarOverflowPopup();
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") closeToolbarOverflowPopup();
+  });
+
+  // 监听编辑面板尺寸变化（拖 splitter / 切换侧边栏 / 窗口缩放都会触发）
+  if (editorToolbarEl && typeof ResizeObserver !== "undefined") {
+    const ro = new ResizeObserver(() => {
+      // 用 rAF 合并多次回调，避免 ResizeObserver 在重排里再次触发自己
+      requestAnimationFrame(layoutEditorToolbar);
+    });
+    ro.observe(editorToolbarEl);
+  }
+  // 兜底：窗口大小变了也重排一次
+  window.addEventListener("resize", () => requestAnimationFrame(layoutEditorToolbar));
+  // 首次启动跑一次
+  requestAnimationFrame(layoutEditorToolbar);
 
   /* =============================================================
    * 12. 工具栏按钮绑定

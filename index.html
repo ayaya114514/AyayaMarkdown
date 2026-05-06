@@ -248,6 +248,17 @@
               <line x1="4" y1="12" x2="20" y2="12" />
             </svg>
           </button>
+          <!-- 溢出折叠：宽度不足时把放不下的按钮收进这个下拉里 -->
+          <div class="editor-tool-more-wrap" data-overflow-hidden>
+            <button class="editor-tool-btn editor-tool-more" id="btn-toolbar-more" type="button" title="更多" aria-haspopup="true" aria-expanded="false">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="5" cy="12" r="1.6" />
+                <circle cx="12" cy="12" r="1.6" />
+                <circle cx="19" cy="12" r="1.6" />
+              </svg>
+            </button>
+            <div class="editor-tool-popup" id="editor-tool-popup" role="menu" hidden></div>
+          </div>
         </div>
       </div>
       <div class="pane-body">
@@ -323,6 +334,6 @@
   <script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/addon/selection/active-line.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/addon/display/placeholder.min.js"></script>
 
-  <script src="app.js?v=18"></script>
+  <script src="app.js?v=20"></script>
 </body>
 </html>
