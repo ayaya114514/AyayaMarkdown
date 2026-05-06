@@ -24,6 +24,11 @@
   let saveTimer = null;
   let isDragging = false;
   let isSidebarResizing = false;
+  // 拖动起始锚点：避免按下时按"鼠标绝对位置"重算宽度导致瞬移，改成基于按下那一刻的宽度做增量计算
+  let sidebarDragStartX = 0;
+  let sidebarDragStartWidth = 0;
+  let splitterDragStartX = 0;
+  let splitterDragStartEditorWidth = 0;
   let documents = [];
   let activeDocId = null;
   let isLoadingDocument = false;
@@ -558,6 +563,172 @@ sequenceDiagram
         btn.innerHTML = "✓ 已复制";
         setTimeout(() => (btn.innerHTML = original), 1500);
       });
+    });
+
+    // 5) 给所有标题生成稳定 id，便于目录锚点跳转
+    //    规则尽量贴近 GitHub：小写、空白转 -、剥离常见标点；CJK 字符原样保留
+    //    重复 slug 用 -1 / -2 ... 后缀避免冲突
+    assignHeadingIds(previewEl);
+
+    // 每次重新渲染都隐藏返回按钮，因为之前记录的滚动位置在新内容里已无意义
+    hideJumpBackBtn();
+  }
+
+  function slugify(text) {
+    return (
+      String(text)
+        .trim()
+        .toLowerCase()
+        // 只保留: 字母 数字 下划线 连字符 空白 以及 CJK / 日文假名等常用文字, 其余符号一律剥掉
+        .replace(/[^\w\s一-鿿぀-ゟ゠-ヿ가-힯-]/g, "")
+        .replace(/\s+/g, "-")
+        .replace(/^-+|-+$/g, "") || "section"
+    );
+  }
+
+  function assignHeadingIds(root) {
+    const used = Object.create(null);
+    root.querySelectorAll("h1, h2, h3, h4, h5, h6").forEach((h) => {
+      const base = slugify(h.textContent);
+      let id = base;
+      // 同名标题加序号区分
+      if (used[base] !== undefined) {
+        used[base] += 1;
+        id = `${base}-${used[base]}`;
+      } else {
+        used[base] = 0;
+      }
+      h.id = id;
+    });
+  }
+
+  /* ---------- 目录锚点跳转 + 返回上次位置 ---------- */
+  // 预览区滚动容器（不是 #preview 自己，而是它的父级 .pane-body）
+  const previewScroll = previewEl.parentElement;
+  const jumpBackBtn = document.getElementById("btn-jump-back");
+  // 跳转前的滚动位置；为 null 表示当前没有可返回的状态
+  // editorTop 用 CodeMirror scroller 的 scrollTop 表示
+  let lastJumpFrom = null;
+
+  function showJumpBackBtn() {
+    if (!jumpBackBtn) return;
+    jumpBackBtn.hidden = false;
+    // 触发一次重排再加 .visible，让淡入过渡能生效
+    requestAnimationFrame(() => jumpBackBtn.classList.add("visible"));
+  }
+
+  function hideJumpBackBtn() {
+    if (!jumpBackBtn) return;
+    jumpBackBtn.classList.remove("visible");
+    jumpBackBtn.hidden = true;
+    lastJumpFrom = null;
+  }
+
+  // 在源 markdown 里按出现顺序找标题行，给出和预览区一致的 slug
+  // 返回 [{line, level, text, id}, ...]
+  function listSourceHeadings() {
+    if (!window.cm) return [];
+    const src = cm.getValue();
+    const lines = src.split("\n");
+    const used = Object.create(null);
+    const result = [];
+    let inFence = false;
+    // 简单识别围栏代码块（``` 或 ~~~），代码块内的 # 不算标题
+    const fenceRe = /^\s{0,3}(`{3,}|~{3,})/;
+    const headingRe = /^(#{1,6})\s+(.+?)\s*#*\s*$/;
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      if (fenceRe.test(line)) {
+        inFence = !inFence;
+        continue;
+      }
+      if (inFence) continue;
+      const m = line.match(headingRe);
+      if (!m) continue;
+      const text = m[2];
+      const base = slugify(text);
+      let id = base;
+      if (used[base] !== undefined) {
+        used[base] += 1;
+        id = `${base}-${used[base]}`;
+      } else {
+        used[base] = 0;
+      }
+      result.push({ line: i, level: m[1].length, text, id });
+    }
+    return result;
+  }
+
+  // 把 CodeMirror 滚动到指定行，平滑动画（CodeMirror 自带的是瞬时，这里直接对 scroller 做 scrollTo）
+  function smoothScrollEditorToLine(lineNo) {
+    if (!window.cm) return;
+    const scroller = cm.getScrollerElement();
+    // charCoords 在 "local" 坐标系下给出的是内容内偏移，可直接用作 scrollTop
+    const coords = cm.charCoords({ line: lineNo, ch: 0 }, "local");
+    // 留点上边距，别让标题贴着顶
+    const target = Math.max(0, coords.top - 12);
+    scroller.scrollTo({ top: target, behavior: "smooth" });
+  }
+
+  // 拦截预览区里所有锚点链接（[xx](#anchor)）：在容器内部滚动到目标，并记录跳转前位置
+  previewEl.addEventListener("click", (e) => {
+    const a = e.target.closest('a[href]');
+    if (!a || !previewEl.contains(a)) return;
+    const href = a.getAttribute("href") || "";
+    if (!href.startsWith("#") || href === "#") return;
+
+    // 解码：marked 可能会对中文锚点做 URI 编码
+    let id;
+    try {
+      id = decodeURIComponent(href.slice(1));
+    } catch (_) {
+      id = href.slice(1);
+    }
+    const target = previewEl.querySelector(`#${CSS.escape(id)}`);
+    if (!target) return;
+
+    e.preventDefault();
+    // 同时记录预览区与编辑器当前滚动位置，便于"返回"恢复
+    const editorScroller = window.cm ? cm.getScrollerElement() : null;
+    lastJumpFrom = {
+      previewTop: previewScroll.scrollTop,
+      editorTop: editorScroller ? editorScroller.scrollTop : 0,
+    };
+
+    // 1) 预览区滚动
+    const targetTop = target.getBoundingClientRect().top
+      - previewScroll.getBoundingClientRect().top
+      + previewScroll.scrollTop;
+    previewScroll.scrollTo({ top: targetTop - 8, behavior: "smooth" });
+
+    // 2) 编辑器同步跳到对应的标题行
+    //    用源码扫描 + slug 匹配的方式而不是依赖 DOM —— DOM 只给 id，没源行信息
+    //    注意：不动光标。CodeMirror 在 setCursor 后会把光标"滚进可视区"，
+    //    会和我们的 smooth scroll 抢，导致标题被塞到可视区底部；
+    //    返回按钮也会被这个机制反复拉回光标行，所以这里只滚 scroller。
+    const headings = listSourceHeadings();
+    const match = headings.find((h) => h.id === id);
+    if (match && window.cm) {
+      smoothScrollEditorToLine(match.line);
+    }
+
+    showJumpBackBtn();
+  });
+
+  if (jumpBackBtn) {
+    jumpBackBtn.addEventListener("click", () => {
+      if (!lastJumpFrom) {
+        hideJumpBackBtn();
+        return;
+      }
+      previewScroll.scrollTo({ top: lastJumpFrom.previewTop, behavior: "smooth" });
+      if (window.cm) {
+        cm.getScrollerElement().scrollTo({
+          top: lastJumpFrom.editorTop,
+          behavior: "smooth",
+        });
+      }
+      hideJumpBackBtn();
     });
   }
 
@@ -1194,6 +1365,8 @@ ${bodyHtml}
     documentSidebar.classList.add("resizing");
     document.body.style.cursor = "col-resize";
     document.body.style.userSelect = "none";
+    sidebarDragStartX = e.clientX;
+    sidebarDragStartWidth = documentSidebar.getBoundingClientRect().width;
     e.preventDefault();
     e.stopPropagation();
   });
@@ -1203,13 +1376,15 @@ ${bodyHtml}
     splitter.classList.add("dragging");
     document.body.style.cursor = "col-resize";
     document.body.style.userSelect = "none";
+    splitterDragStartX = e.clientX;
+    splitterDragStartEditorWidth = editorPane.getBoundingClientRect().width;
     e.preventDefault();
   });
 
   document.addEventListener("mousemove", (e) => {
     if (isSidebarResizing) {
-      const rect = workspace.getBoundingClientRect();
-      applySidebarWidth(e.clientX - rect.left);
+      // 用按下时刻的宽度 + 鼠标位移，保证原地起拖、不瞬移
+      applySidebarWidth(sidebarDragStartWidth + (e.clientX - sidebarDragStartX));
       return;
     }
 
@@ -1217,14 +1392,15 @@ ${bodyHtml}
     const rect = workspace.getBoundingClientRect();
     const sidebarWidth = documentSidebar ? documentSidebar.getBoundingClientRect().width : 0;
     const resizableWidth = rect.width - sidebarWidth - splitter.offsetWidth;
-    let leftWidth = e.clientX - rect.left - sidebarWidth;
     // 最小 200px，避免拖到看不见
     const min = 200;
     if (resizableWidth <= min * 2) return;
     const max = resizableWidth - min;
+    let leftWidth = splitterDragStartEditorWidth + (e.clientX - splitterDragStartX);
     leftWidth = Math.max(min, Math.min(max, leftWidth));
-    const percent = (leftWidth / resizableWidth) * 100;
-    editorPane.style.flex = `0 0 ${percent}%`;
+    // 直接用像素：之前用 percent 是相对 workspace 算的，但 percent 又是按"减去 sidebar 后的宽度"得出，
+    // 开启侧边栏后两者基数不一致，会让真实宽度被放大，按下瞬间就跳一下
+    editorPane.style.flex = `0 0 ${leftWidth}px`;
     previewPane.style.flex = "1";
   });
 

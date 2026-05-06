@@ -163,14 +163,11 @@ a {
 .logo svg {
   width: 22px;
   height: 22px;
-  color: var(--primary);
+  color: #7ee787;
 }
 
 .logo-text {
-  background: linear-gradient(135deg, var(--primary), var(--accent));
-  -webkit-background-clip: text;
-  background-clip: text;
-  -webkit-text-fill-color: transparent;
+  color: #7ee787;
 }
 
 /* 按钮通用 */
@@ -283,6 +280,11 @@ body.sidebar-collapsed .icon-sidebar-closed {
     opacity 0.18s ease,
     transform 0.22s ease,
     border-color 0.22s ease;
+}
+
+/* 拖动调整宽度时关掉宽度过渡，否则每次 mousemove 都要花 0.22s 才追上鼠标，看起来像在闪 */
+.document-sidebar.resizing {
+  transition: none;
 }
 
 body.sidebar-collapsed .document-sidebar {
@@ -495,6 +497,48 @@ body.sidebar-collapsed .document-sidebar-resizer {
 .pane-preview {
   flex: 1;
   border-left: 1px solid var(--border);
+  position: relative;
+}
+
+/* 跳转后浮在预览区右上角的"返回上次位置"按钮 */
+.jump-back-btn {
+  position: absolute;
+  top: 48px;
+  right: 18px;
+  z-index: 5;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: #0d1117;
+  background: #7ee787;
+  border: 1px solid #7ee787;
+  border-radius: 6px;
+  cursor: pointer;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.25);
+  opacity: 0;
+  transform: translateY(-4px);
+  transition: opacity 0.18s ease, transform 0.18s ease, background-color 0.15s ease;
+}
+
+.jump-back-btn[hidden] {
+  display: none;
+}
+
+.jump-back-btn.visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.jump-back-btn:hover {
+  background: #6dd97a;
+}
+
+.jump-back-btn svg {
+  width: 14px;
+  height: 14px;
 }
 
 /* 面板头部（编辑/预览的小标签） */
