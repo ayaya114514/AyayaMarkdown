@@ -1024,14 +1024,10 @@ body[data-theme="dark"] .CodeMirror-selected {
 
 .markdown-body h1 {
   font-size: 2em;
-  padding-bottom: 0.3em;
-  border-bottom: 1px solid var(--border);
 }
 
 .markdown-body h2 {
   font-size: 1.5em;
-  padding-bottom: 0.3em;
-  border-bottom: 1px solid var(--border);
 }
 
 .markdown-body h3 {
@@ -1128,34 +1124,53 @@ body[data-theme="dark"] .CodeMirror-selected {
   overflow-x: auto;
 }
 
-/* 代码块右上角的语言标签 + 复制按钮 */
+/* 代码块右上角的语言标签 + 复制按钮（叠在 pre 上层，hover 切换） */
 .code-block-wrapper {
   position: relative;
 }
 
-.code-block-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 6px 14px;
-  background: var(--bg-subtle);
-  border-bottom: 1px solid var(--code-border);
+.code-lang-label,
+.code-block-wrapper .copy-btn {
+  position: absolute;
+  top: 8px;
+  right: 10px;
+  z-index: 2;
   font-size: 11px;
+  line-height: 1;
   color: var(--text-muted);
   text-transform: uppercase;
-  letter-spacing: 0;
   font-weight: 600;
+  letter-spacing: 0.02em;
+  pointer-events: none;
+  transition: opacity 0.15s ease;
 }
 
-.copy-btn {
+.code-lang-label {
+  padding: 4px 6px;
+  opacity: 0.85;
+}
+
+.code-block-wrapper .copy-btn {
   display: inline-flex;
   align-items: center;
   gap: 4px;
   padding: 3px 8px;
-  font-size: 11px;
-  color: var(--text-muted);
   border-radius: 4px;
-  transition: background-color 0.15s ease, color 0.15s ease;
+  opacity: 0;
+  text-transform: none;
+  font-weight: 500;
+  background: var(--bg-subtle);
+  border: 1px solid var(--code-border);
+  cursor: pointer;
+}
+
+.code-block-wrapper:hover .code-lang-label {
+  opacity: 0;
+}
+
+.code-block-wrapper:hover .copy-btn {
+  opacity: 1;
+  pointer-events: auto;
 }
 
 .copy-btn:hover {
