@@ -6,12 +6,14 @@
  *   2. Markdown -> HTML 渲染（marked + highlight.js）
  *   3. LaTeX 公式渲染（KaTeX auto-render）
  *   4. Mermaid 图表渲染
- *   5. 多文档侧边栏 / 文件上传 / 导出 MD / 导出 HTML
- *   6. 主题切换（浅色 <-> 深色）
+ *   5. 多文档侧边栏 / 文件上传 / 导出 MD / HTML / PDF
+ *   6. 主题：仅深色（早期支持的浅色已移除）
  *   7. 左右面板宽度可拖拽调整
- *   8. 文档集合本地保存（localStorage）
+ *   8. 文档集合保存到 IndexedDB；UI 小状态仍走 localStorage
  *   9. 字数统计 + Toast 通知
  *   10. 快捷键（Ctrl+S / Ctrl+N / Ctrl+O）
+ *   11. 目录锚点跳转 + 跳转后返回原位置
+ *   12. 编辑器格式化工具栏（含窄宽溢出折叠）
  * ============================================================= */
 
 (function () {
@@ -597,8 +599,10 @@ sequenceDiagram
       String(text)
         .trim()
         .toLowerCase()
-        // 只保留: 字母 数字 下划线 连字符 空白 以及 CJK / 日文假名等常用文字, 其余符号一律剥掉
-        .replace(/[^\w\s一-鿿぀-ゟ゠-ヿ가-힯-]/g, "")
+        // 用 Unicode property escapes 保留所有"字母 + 数字"——
+        // 包括 CJK、日文假名、韩文谚文、欧洲带音字符（é/ñ/ü/ß 等）、希腊字母等；
+        // 加上空白、下划线、连字符；其余符号一律剥掉
+        .replace(/[^\p{L}\p{N}\s_-]/gu, "")
         .replace(/\s+/g, "-")
         .replace(/^-+|-+$/g, "") || "section"
     );
@@ -932,11 +936,34 @@ sequenceDiagram
       .trim();
   }
 
-  function inferDocumentTitle(md, fallback = "未命名文档") {
-    const firstHeading = String(md || "").match(/^#\s+(.+)$/m);
-    if (firstHeading) {
-      return cleanTitle(firstHeading[1]) || fallback;
+  // 在 markdown 文本里找第一个标题（ATX `# xxx` 或 setext `xxx\n===`），返回标题文本；
+  // 找不到返回空串。围栏代码块（``` 或 ~~~）内部的 # 不算标题。
+  function findFirstHeadingText(md) {
+    const lines = String(md || "").split(/\r?\n/);
+    let inFence = false;
+    const fenceRe = /^\s{0,3}(`{3,}|~{3,})/;
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      if (fenceRe.test(line)) { inFence = !inFence; continue; }
+      if (inFence) continue;
+
+      const atxM = line.match(/^#\s+(.+?)\s*#*\s*$/);
+      if (atxM) return atxM[1].trim();
+
+      // setext：上一行非空且非 ATX，本行为 === 或 ---（h2 至少两个 - 以避免水平线/列表混淆）
+      if (i > 0) {
+        const prev = lines[i - 1].trim();
+        if (prev && !/^#{1,6}\s+/.test(prev)) {
+          if (/^=+\s*$/.test(line) || /^-{2,}\s*$/.test(line)) return prev;
+        }
+      }
     }
+    return "";
+  }
+
+  function inferDocumentTitle(md, fallback = "未命名文档") {
+    const heading = findFirstHeadingText(md);
+    if (heading) return cleanTitle(heading) || fallback;
 
     const firstContentLine = String(md || "")
       .split(/\r?\n/)
@@ -1347,16 +1374,47 @@ sequenceDiagram
     win.document.write(fullHtml);
     win.document.close();
 
-    // 等外部 CSS 加载完再 print，避免样式还没生效就出 PDF
+    // 等所有 <link rel="stylesheet"> 加载完再 print —— 之前用 setTimeout(300) 兜底，
+    // CDN 慢时样式还没下载完就打印，PDF 里就成了"裸 HTML"。
     const triggerPrint = () => {
-      setTimeout(() => {
+      const fire = () => {
         try {
           win.focus();
           win.print();
         } catch (e) {
           console.warn("打印失败:", e);
         }
-      }, 300);
+      };
+      const links = Array.from(win.document.querySelectorAll('link[rel="stylesheet"]'));
+      if (!links.length) {
+        fire();
+        return;
+      }
+      let printed = false;
+      let pending = links.length;
+      const done = () => {
+        if (printed) return;
+        pending -= 1;
+        if (pending <= 0) {
+          printed = true;
+          fire();
+        }
+      };
+      links.forEach((link) => {
+        // 已经加载完成（缓存命中）：sheet 不为 null
+        if (link.sheet) {
+          done();
+          return;
+        }
+        link.addEventListener("load", done, { once: true });
+        link.addEventListener("error", done, { once: true });
+      });
+      // 兜底：3 秒还没全完成也强制 print，避免某条 link 永远 hang 住
+      setTimeout(() => {
+        if (printed) return;
+        printed = true;
+        fire();
+      }, 3000);
     };
     if (win.document.readyState === "complete") {
       triggerPrint();
@@ -1370,11 +1428,11 @@ sequenceDiagram
     return String(filename || "").replace(/\.(md|markdown|txt)$/i, "");
   }
 
-  // 从 markdown 第一行（一级标题）推断文件名，没有就用当前文档名或时间戳
+  // 从第一个标题（ATX 或 setext）推断文件名，没有就用当前文档名或时间戳
   function inferFilename(md, fallbackTitle = "") {
-    const firstHeading = md.match(/^#\s+(.+)$/m);
-    if (firstHeading) {
-      return firstHeading[1].trim().replace(/[\\/:*?"<>|]/g, "-").slice(0, 50) || "document";
+    const heading = findFirstHeadingText(md);
+    if (heading) {
+      return heading.replace(/[\\/:*?"<>|]/g, "-").slice(0, 50) || "document";
     }
     const fallback = cleanTitle(fallbackTitle).replace(/[\\/:*?"<>|]/g, "-").slice(0, 50);
     if (fallback) return fallback;
@@ -1397,6 +1455,8 @@ sequenceDiagram
   }
 
   // 构建可独立打开的 HTML 文档（自包含样式）
+  // 浅色 / 深色两套主题靠 prefers-color-scheme 自适应；
+  // 打印 (PDF 导出) 强制浅色，避免黑底浪费墨水。
   function buildExportableHtml(title, bodyHtml) {
     return `<!DOCTYPE html>
 <html lang="zh-CN">
@@ -1404,21 +1464,65 @@ sequenceDiagram
 <meta charset="UTF-8">
 <title>${escapeHtml(title)}</title>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/styles/github.min.css">
+<!-- 两套 highlight.js 主题用 media query 选其一；打印时归类到浅色 -->
+<link rel="stylesheet" media="(prefers-color-scheme: light), print" href="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/styles/github.min.css">
+<link rel="stylesheet" media="(prefers-color-scheme: dark)" href="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/styles/github-dark.min.css">
 <style>
-  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", sans-serif;
-         max-width: 860px; margin: 40px auto; padding: 0 24px; line-height: 1.75; color: #1f2328; }
-  h1, h2 { padding-bottom: .3em; border-bottom: 1px solid #eee; }
-  pre { background: #f6f8fa; padding: 16px; border-radius: 8px; overflow-x: auto; }
+  :root {
+    color-scheme: light dark;
+    --bg: #ffffff;
+    --text: #1f2328;
+    --muted: #555;
+    --border: #e5e7eb;
+    --code-bg: #f6f8fa;
+    --quote-bg: #f0f0ff;
+    --quote-border: #4f46e5;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0d1117;
+      --text: #c9d1d9;
+      --muted: #8b949e;
+      --border: #30363d;
+      --code-bg: #161b22;
+      --quote-bg: #161b22;
+      --quote-border: #7ee787;
+    }
+  }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", sans-serif;
+    max-width: 860px;
+    margin: 40px auto;
+    padding: 0 24px;
+    line-height: 1.75;
+    background: var(--bg);
+    color: var(--text);
+  }
+  h1, h2 { padding-bottom: .3em; border-bottom: 1px solid var(--border); }
+  pre { background: var(--code-bg); padding: 16px; border-radius: 8px; overflow-x: auto; }
   code { font-family: "JetBrains Mono", monospace; font-size: .9em; }
-  :not(pre) > code { background: #f6f8fa; padding: 2px 6px; border-radius: 4px; }
-  blockquote { border-left: 4px solid #4f46e5; background: #f0f0ff;
-               padding: .4em 1em; margin: 1em 0; color: #555; border-radius: 0 6px 6px 0; }
+  :not(pre) > code { background: var(--code-bg); padding: 2px 6px; border-radius: 4px; }
+  blockquote {
+    border-left: 4px solid var(--quote-border);
+    background: var(--quote-bg);
+    padding: .4em 1em;
+    margin: 1em 0;
+    color: var(--muted);
+    border-radius: 0 6px 6px 0;
+  }
   table { border-collapse: collapse; width: 100%; margin: 1em 0; }
-  th, td { border: 1px solid #ddd; padding: 8px 14px; }
-  th { background: #f6f8fa; }
+  th, td { border: 1px solid var(--border); padding: 8px 14px; }
+  th { background: var(--code-bg); }
   img { max-width: 100%; }
   .mermaid { text-align: center; margin: 1em 0; }
+  /* 打印 / PDF 导出强制浅色 */
+  @media print {
+    body { background: #fff !important; color: #1f2328 !important; }
+    pre, :not(pre) > code, th { background: #f6f8fa !important; }
+    blockquote { background: #f0f0ff !important; color: #555 !important; border-left-color: #4f46e5 !important; }
+    th, td { border-color: #e5e7eb !important; }
+    h1, h2 { border-bottom-color: #e5e7eb !important; }
+  }
 </style>
 </head>
 <body>
@@ -1591,13 +1695,23 @@ ${bodyHtml}
     cm.focus();
   }
 
-  // 给当前行（或选区涉及的每一行）加前缀；如果该行已带前缀就移除，等于切换。
-  function togglePrefix(prefix) {
+  // 检测行首已有的"块级前缀"长度（同类才会被替换）：
+  //   heading: # / ## / ... / ###### + 空格
+  //   quote:   > + 空格
+  //   list:    - / * / + / 1. 等列表标记，含可选的任务复选框 [ ]/[x]
+  // 同类下不同前缀（# vs ##、- vs 1.）会互相替换；同前缀二次点击则移除。
+  function detectBlockPrefix(text, kind) {
+    if (kind === "heading") return text.match(/^#{1,6}\s+/);
+    if (kind === "quote")   return text.match(/^>\s+/);
+    if (kind === "list")    return text.match(/^([-*+]\s+\[[ xX]\]\s+|[-*+]\s+|\d+\.\s+)/);
+    return null;
+  }
+
+  function setBlockPrefix(kind, newPrefix) {
     cm.operation(() => {
       // listSelections() 即便没选区也会返回一个零宽 Range（anchor === head），
       // 调用 from()/to() 都拿到光标位置，不需要再合成对象。
       const ranges = cm.listSelections();
-      // 收集所有涉及的行号（去重）
       const lineNums = new Set();
       ranges.forEach((range) => {
         const from = range.from();
@@ -1606,10 +1720,19 @@ ${bodyHtml}
       });
       [...lineNums].forEach((line) => {
         const text = cm.getLine(line) || "";
-        if (text.startsWith(prefix)) {
-          cm.replaceRange("", { line, ch: 0 }, { line, ch: prefix.length });
+        const m = detectBlockPrefix(text, kind);
+        if (m) {
+          const oldLen = m[0].length;
+          if (m[0] === newPrefix) {
+            // 同前缀二次点击 → 移除
+            cm.replaceRange("", { line, ch: 0 }, { line, ch: oldLen });
+          } else {
+            // 同类不同前缀 → 替换（修复："# 标题"点 H2 变 "## # 标题"的堆叠 bug）
+            cm.replaceRange(newPrefix, { line, ch: 0 }, { line, ch: oldLen });
+          }
         } else {
-          cm.replaceRange(prefix, { line, ch: 0 });
+          // 没有同类前缀 → 直接加
+          cm.replaceRange(newPrefix, { line, ch: 0 });
         }
       });
     });
@@ -1633,19 +1756,19 @@ ${bodyHtml}
     switch (action) {
       case "undo": cm.undo(); cm.focus(); break;
       case "redo": cm.redo(); cm.focus(); break;
-      case "h1": togglePrefix("# "); break;
-      case "h2": togglePrefix("## "); break;
-      case "h3": togglePrefix("### "); break;
+      case "h1": setBlockPrefix("heading", "# "); break;
+      case "h2": setBlockPrefix("heading", "## "); break;
+      case "h3": setBlockPrefix("heading", "### "); break;
       case "bold": wrapSelection("**", "**", "粗体"); break;
       case "italic": wrapSelection("*", "*", "斜体"); break;
       case "strike": wrapSelection("~~", "~~", "删除线"); break;
       case "code": wrapSelection("`", "`", "代码"); break;
       case "link": wrapSelection("[", "](https://)", "链接文本"); break;
       case "image": wrapSelection("![", "](https://)", "图片描述"); break;
-      case "quote": togglePrefix("> "); break;
-      case "ul": togglePrefix("- "); break;
-      case "ol": togglePrefix("1. "); break;
-      case "task": togglePrefix("- [ ] "); break;
+      case "quote": setBlockPrefix("quote", "> "); break;
+      case "ul": setBlockPrefix("list", "- "); break;
+      case "ol": setBlockPrefix("list", "1. "); break;
+      case "task": setBlockPrefix("list", "- [ ] "); break;
       case "codeblock": insertBlock("```\n代码\n```"); break;
       case "table":
         insertBlock("| 列1 | 列2 | 列3 |\n| --- | --- | --- |\n| A   | B   | C   |");
