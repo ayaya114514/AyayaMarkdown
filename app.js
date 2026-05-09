@@ -33,6 +33,11 @@
   let activeDocId = null;
   let isLoadingDocument = false;
   let storageFailureShown = false;
+  // 文档切换时记住每个文档当前的阅读进度（编辑器 + 预览滚动位置），
+  // 仅内存保留：刷新页面后从顶部开始即可，避免持久化 + 渲染高度变化带来的复杂性
+  const scrollPositions = new Map();
+  // 等待下一次 renderPreview 完成后再恢复的预览滚动位置；null 表示无待恢复任务
+  let pendingPreviewScrollTop = null;
 
   /* ---------- 默认示例文档：首次打开时展示，让用户看到所有特性 ---------- */
   const DEFAULT_DOC = `# 欢迎使用 AyayaMarkdown ✨
@@ -568,8 +573,23 @@ sequenceDiagram
     //    重复 slug 用 -1 / -2 ... 后缀避免冲突
     assignHeadingIds(previewEl);
 
-    // 每次重新渲染都隐藏返回按钮，因为之前记录的滚动位置在新内容里已无意义
-    hideJumpBackBtn();
+    // 切换文档时（lastJumpFrom 记录的 docId 已不是当前 doc）记录失效，隐藏返回按钮。
+    // 仅在编辑当前文档导致的重新渲染时不清，保持返回按钮可用 —— previewScroll 滚动位置不会因 innerHTML 重置归零，回跳依然有意义。
+    if (lastJumpFrom && lastJumpFrom.docId !== activeDocId) {
+      hideJumpBackBtn();
+    }
+
+    // 6) 文档切换后恢复阅读进度：等到本次 DOM 渲染完成后再设置预览滚动位置
+    //    用两次 rAF 让浏览器把布局算完，避免设了之后被立即覆盖
+    if (pendingPreviewScrollTop != null) {
+      const target = pendingPreviewScrollTop;
+      pendingPreviewScrollTop = null;
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          if (previewScroll) previewScroll.scrollTop = target;
+        });
+      });
+    }
   }
 
   function slugify(text) {
@@ -624,6 +644,7 @@ sequenceDiagram
 
   // 在源 markdown 里按出现顺序找标题行，给出和预览区一致的 slug
   // 返回 [{line, level, text, id}, ...]
+  // 支持两种语法：ATX（# 开头）和 setext（下一行用 === 或 ---）
   function listSourceHeadings() {
     if (!window.cm) return [];
     const src = cm.getValue();
@@ -631,19 +652,14 @@ sequenceDiagram
     const used = Object.create(null);
     const result = [];
     let inFence = false;
-    // 简单识别围栏代码块（``` 或 ~~~），代码块内的 # 不算标题
+    // 围栏代码块（``` 或 ~~~），代码块内的 # 不算标题
     const fenceRe = /^\s{0,3}(`{3,}|~{3,})/;
-    const headingRe = /^(#{1,6})\s+(.+?)\s*#*\s*$/;
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i];
-      if (fenceRe.test(line)) {
-        inFence = !inFence;
-        continue;
-      }
-      if (inFence) continue;
-      const m = line.match(headingRe);
-      if (!m) continue;
-      const text = m[2];
+    const atxRe = /^(#{1,6})\s+(.+?)\s*#*\s*$/;
+    // setext 风格的下划线行：`===…`(h1) 或 `---…`(h2)；前提是上一行非空
+    const setextH1Re = /^=+\s*$/;
+    const setextH2Re = /^-+\s*$/;
+
+    function pushHeading(line, level, text) {
       const base = slugify(text);
       let id = base;
       if (used[base] !== undefined) {
@@ -652,20 +668,68 @@ sequenceDiagram
       } else {
         used[base] = 0;
       }
-      result.push({ line: i, level: m[1].length, text, id });
+      result.push({ line, level, text, id });
+    }
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      if (fenceRe.test(line)) {
+        inFence = !inFence;
+        continue;
+      }
+      if (inFence) continue;
+
+      // ATX 标题
+      const m = line.match(atxRe);
+      if (m) {
+        pushHeading(i, m[1].length, m[2]);
+        continue;
+      }
+
+      // setext：当前行是 === / ---，且上一行有内容 → 上一行是标题
+      if (i > 0) {
+        const prev = lines[i - 1];
+        const prevTrim = prev.trim();
+        if (prevTrim && !atxRe.test(prev)) {
+          if (setextH1Re.test(line)) {
+            pushHeading(i - 1, 1, prevTrim);
+            continue;
+          }
+          if (setextH2Re.test(line) && /^-{2,}\s*$/.test(line)) {
+            // 至少两个 - 才认为是 h2，避免和水平分割线 / 列表前缀混淆
+            pushHeading(i - 1, 2, prevTrim);
+            continue;
+          }
+        }
+      }
     }
     return result;
   }
 
-  // 把 CodeMirror 滚动到指定行，平滑动画（CodeMirror 自带的是瞬时，这里直接对 scroller 做 scrollTo）
+  // 把 CodeMirror 滚动到指定行，平滑动画。
+  // heightAtLine 比 charCoords 更稳定：charCoords 对未渲染的视口外行只给估算值，
+  // 跨长距离跳转时容易偏；heightAtLine 用 CodeMirror 内部行高累计树，无论行在不在视口都准确。
+  // 不做延迟校正：动画期间用 instant scroll 打断 smooth 会造成"突然卡住"的视觉。
   function smoothScrollEditorToLine(lineNo) {
     if (!window.cm) return;
     const scroller = cm.getScrollerElement();
-    // charCoords 在 "local" 坐标系下给出的是内容内偏移，可直接用作 scrollTop
-    const coords = cm.charCoords({ line: lineNo, ch: 0 }, "local");
-    // 留点上边距，别让标题贴着顶
-    const target = Math.max(0, coords.top - 12);
+    const target = Math.max(0, cm.heightAtLine(lineNo, "local") - 12);
     scroller.scrollTo({ top: target, behavior: "smooth" });
+  }
+
+  // 把预览区平滑滚动到目标元素。
+  // 用户点 anchor 时 renderPreview 早已跑完，KaTeX 同步、Mermaid promise 也已 resolve，
+  // DOM 高度此时是稳定的，无需"动画期间校正"——校正反而会打断 smooth 动画造成卡顿。
+  function smoothScrollPreviewToElement(targetEl) {
+    if (!targetEl || !previewScroll) return;
+    const target = Math.max(
+      0,
+      targetEl.getBoundingClientRect().top
+        - previewScroll.getBoundingClientRect().top
+        + previewScroll.scrollTop
+        - 24
+    );
+    previewScroll.scrollTo({ top: target, behavior: "smooth" });
   }
 
   // 拦截预览区里所有锚点链接（[xx](#anchor)）：在容器内部滚动到目标，并记录跳转前位置
@@ -682,30 +746,53 @@ sequenceDiagram
     } catch (_) {
       id = href.slice(1);
     }
-    const target = previewEl.querySelector(`#${CSS.escape(id)}`);
+
+    // 1) 精确按 id 找
+    let target = null;
+    try {
+      target = previewEl.querySelector(`#${CSS.escape(id)}`);
+    } catch (_) {
+      target = null;
+    }
+
+    // 2) 兜底：按 slug(textContent) 匹配 —— 兼容用户用其他工具生成 TOC、slug 规则略有差异的情况
+    if (!target) {
+      const wantSlug = slugify(id.replace(/-/g, " "));
+      const headings = previewEl.querySelectorAll("h1, h2, h3, h4, h5, h6");
+      for (const h of headings) {
+        if (h.id === id || slugify(h.textContent) === wantSlug) {
+          target = h;
+          break;
+        }
+      }
+    }
     if (!target) return;
 
     e.preventDefault();
-    // 同时记录预览区与编辑器当前滚动位置，便于"返回"恢复
+    // 同时记录预览区与编辑器当前滚动位置，便于"返回"恢复；docId 用于切换文档时判定失效
     const editorScroller = window.cm ? cm.getScrollerElement() : null;
     lastJumpFrom = {
+      docId: activeDocId,
       previewTop: previewScroll.scrollTop,
       editorTop: editorScroller ? editorScroller.scrollTop : 0,
     };
 
     // 1) 预览区滚动
-    const targetTop = target.getBoundingClientRect().top
-      - previewScroll.getBoundingClientRect().top
-      + previewScroll.scrollTop;
-    previewScroll.scrollTo({ top: targetTop - 8, behavior: "smooth" });
+    smoothScrollPreviewToElement(target);
 
     // 2) 编辑器同步跳到对应的标题行
-    //    用源码扫描 + slug 匹配的方式而不是依赖 DOM —— DOM 只给 id，没源行信息
+    //    用源码扫描 + slug 匹配的方式而不是依赖 DOM —— DOM 只给 id，没源行信息。
     //    注意：不动光标。CodeMirror 在 setCursor 后会把光标"滚进可视区"，
     //    会和我们的 smooth scroll 抢，导致标题被塞到可视区底部；
     //    返回按钮也会被这个机制反复拉回光标行，所以这里只滚 scroller。
     const headings = listSourceHeadings();
-    const match = headings.find((h) => h.id === id);
+    const targetId = target.id || id;
+    let match = headings.find((h) => h.id === targetId);
+    if (!match) {
+      // id 不一致时按文本兜底
+      const wantSlug = slugify(target.textContent);
+      match = headings.find((h) => h.id === wantSlug || slugify(h.text) === wantSlug);
+    }
     if (match && window.cm) {
       smoothScrollEditorToLine(match.line);
     }
@@ -1016,6 +1103,16 @@ sequenceDiagram
     renderDocumentList();
   }
 
+  // 记录当前活动文档的滚动位置（编辑器 + 预览），供切换回来时恢复用
+  function captureCurrentScroll() {
+    if (!activeDocId) return;
+    const editorScroller = window.cm ? cm.getScrollerElement() : null;
+    scrollPositions.set(activeDocId, {
+      editorTop: editorScroller ? editorScroller.scrollTop : 0,
+      previewTop: previewScroll ? previewScroll.scrollTop : 0,
+    });
+  }
+
   function loadActiveDocumentIntoEditor() {
     const doc = getActiveDocument();
     if (!doc) return;
@@ -1029,9 +1126,23 @@ sequenceDiagram
     }
 
     updateStats(doc.content || "");
+
+    // 跳转返回状态如果不属于当前文档，立即失效（覆盖删除当前文档等切换路径）
+    if (lastJumpFrom && lastJumpFrom.docId !== doc.id) {
+      hideJumpBackBtn();
+    }
+
+    // 拿出之前记下的滚动位置：编辑器在 refresh 后立即设；预览要等 renderPreview 跑完才能设
+    const saved = scrollPositions.get(doc.id);
+    pendingPreviewScrollTop = saved ? saved.previewTop : 0;
+
     schedulePreview();
     renderDocumentList();
-    requestAnimationFrame(() => cm.refresh());
+    requestAnimationFrame(() => {
+      cm.refresh();
+      const editorScroller = cm.getScrollerElement();
+      if (editorScroller) editorScroller.scrollTop = saved ? saved.editorTop : 0;
+    });
   }
 
   function switchDocument(docId) {
@@ -1040,6 +1151,9 @@ sequenceDiagram
     const next = documents.find((doc) => doc.id === docId);
     if (!next) return;
 
+    captureCurrentScroll();
+    // 切换文档前清掉"跳转返回"状态：滚动位置属于上一篇文档，留着会跳错位置
+    hideJumpBackBtn();
     flushCurrentDocument();
     activeDocId = next.id;
     persistDocuments(true);
