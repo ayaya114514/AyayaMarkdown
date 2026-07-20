@@ -824,12 +824,26 @@ sequenceDiagram
   /* =============================================================
    * 6. 字数 / 行数 / 字符数统计
    * ============================================================= */
+  function countWords(text) {
+    return text.trim() ? text.trim().split(/\s+/).filter(Boolean).length : 0;
+  }
+
   function updateStats(text) {
-    statChars.textContent = text.length.toLocaleString();
+    const totalChars = text.length;
+    const totalWords = countWords(text);
+    const selections = cm.getSelections();
+    const selectedChars = selections.reduce((total, selection) => total + selection.length, 0);
+    const selectedWords = selections.reduce((total, selection) => total + countWords(selection), 0);
+    const hasSelection = selectedChars > 0;
+
+    statChars.textContent = hasSelection
+      ? `${selectedChars.toLocaleString()} / ${totalChars.toLocaleString()}`
+      : totalChars.toLocaleString();
     statLines.textContent = (text ? text.split("\n").length : 0).toLocaleString();
-    // 单词数：按空白分隔（中文按字符算；这里只统计英文/数字单词，简单实现）
-    const words = text.trim() ? text.trim().split(/\s+/).filter(Boolean).length : 0;
-    statWords.textContent = words.toLocaleString();
+    // 单词数沿用原有口径：按空白分隔，选区与全文使用同一规则。
+    statWords.textContent = hasSelection
+      ? `${selectedWords.toLocaleString()} / ${totalWords.toLocaleString()}`
+      : totalWords.toLocaleString();
   }
 
   /* =============================================================
@@ -1986,6 +2000,15 @@ ${bodyHtml}
           queueCurrentDocumentSave(value);
         }
         schedulePreview();
+      });
+
+      // 光标或选区变化时立即刷新“选中 / 总计”统计；不触发保存或预览重渲染。
+      cm.on("cursorActivity", () => {
+        try {
+          updateStats(cm.getValue());
+        } catch (e) {
+          console.error("selection stats failed:", e);
+        }
       });
 
       // 首次：立即更新统计 + 安排首次渲染
