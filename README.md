@@ -1,6 +1,6 @@
 # AyayaMarkdown
 
-在线链接：https://markdown-editor-opal-pi.vercel.app
+在线链接：https://ayaya114514.github.io/AyayaMarkdown/
 一款优雅的在线 Markdown 编辑器，左编辑右预览，支持代码高亮、Mermaid 图表与 LaTeX 公式。
 
 ## ✨ 特性
@@ -35,12 +35,11 @@ python3 -m http.server 8000
 # 访问 http://localhost:8000
 ```
 
-## ☁️ 部署到 Vercel
+## ☁️ 部署到 GitHub Pages
 
-1. 把项目推到 GitHub
-2. 在 [vercel.com](https://vercel.com) 点击 **Import Project**，选这个仓库
-3. 框架预设选 **Other**（纯静态），其它保持默认
-4. 点 **Deploy**，几十秒后即可拿到访问链接
+推送到 `main` 分支后，[GitHub Actions](./.github/workflows/deploy-pages.yml) 会自动构建并发布静态站点。
+
+也可以在仓库的 **Actions → Deploy GitHub Pages → Run workflow** 手动触发部署。
 
 ## 🛠 技术栈
 
@@ -57,6 +56,8 @@ python3 -m http.server 8000
 
 ```
 markdown-editor/
+├── .github/workflows/
+│   └── deploy-pages.yml # GitHub Pages 自动部署
 ├── index.html   # 页面骨架
 ├── style.css    # 样式（浅色/深色双主题）
 ├── app.js       # 主逻辑
