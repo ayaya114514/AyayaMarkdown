@@ -11,12 +11,13 @@
 - **编辑器语法着色**：标题、列表、链接、引用、代码块等 Markdown 语法在编辑区直接高亮
 - **Mermaid 图表**：流程图、时序图、类图等
 - **LaTeX 公式**：基于 KaTeX，支持行内与块级公式
-- **文件操作**：新建、上传 `.md`、导出 `.md` / `.html`
-- **双主题**：浅色 / 深色一键切换，跟随系统
-- **自动保存**：文档列表和内容自动存到浏览器 localStorage
+- **文件操作**：新建、上传 `.md`、导出 `.md` / `.html` / `.pdf`
+- **深色界面**：专注写作的统一深色主题
+- **安全预览**：DOMPurify 清理 Markdown HTML，Mermaid 使用 strict security mode
+- **自动保存**：文档内容增量保存到浏览器 IndexedDB，界面设置保存到 localStorage
 - **可拖拽分栏**：自由调整编辑/预览区宽度
 - **快捷键**：`Ctrl/Cmd+S` 导出、`Ctrl/Cmd+O` 上传
-- **零构建**：纯静态页面，所有依赖走 CDN
+- **零构建运行**：纯静态页面，运行时依赖使用带 SRI 校验的固定版本 CDN
 
 ## 🚀 本地运行
 
@@ -34,6 +35,20 @@ start index.html     # Windows
 python3 -m http.server 8000
 # 访问 http://localhost:8000
 ```
+
+页面运行时需要联网加载固定版本的 CodeMirror、marked、DOMPurify、KaTeX、Mermaid 与 highlight.js。
+
+## ✅ 验证与测试
+
+首次运行测试：
+
+```bash
+npm install
+npx playwright install chromium
+npm test
+```
+
+`npm run validate` 执行 JavaScript syntax、HTML asset、SRI 与 security contract 检查；`npm test` 还会运行 Chromium browser tests，覆盖 XSS、即时导出、文档顺序和 responsive layout。
 
 ## ☁️ 部署到 GitHub Pages
 
@@ -58,12 +73,15 @@ python3 -m http.server 8000
 markdown-editor/
 ├── .github/workflows/
 │   └── deploy-pages.yml # GitHub Pages 自动部署
-├── index.html   # 页面骨架
-├── style.css    # 样式（浅色/深色双主题）
-├── app.js       # 主逻辑
+├── scripts/validate.mjs # 静态 validation
+├── tests/               # Playwright browser tests
+├── index.html           # 页面骨架与 CDN dependency pins
+├── style.css            # 深色界面与 responsive styles
+├── app.js               # 编辑、预览、导出与存储逻辑
+├── package.json         # 测试工具配置
 └── README.md
 ```
 
 ## 📝 License
 
-MIT
+[MIT](./LICENSE)

@@ -3,6 +3,10 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta
+    http-equiv="Content-Security-Policy"
+    content="default-src 'self'; script-src 'self' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdn.jsdelivr.net; font-src 'self' data: https://fonts.gstatic.com https://cdn.jsdelivr.net; img-src 'self' data: blob: https:; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'; frame-src 'none'"
+  />
   <title>AyayaMarkdown</title>
   <meta name="description" content="一个支持代码高亮、Mermaid 图表与 LaTeX 公式的在线 Markdown 编辑器。" />
   <!-- 内联 SVG favicon：避免对 /favicon.ico 的 404 请求 -->
@@ -12,26 +16,28 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link
-    href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap"
+    href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;family=JetBrains+Mono:wght@400;500;600;700&amp;display=swap"
     rel="stylesheet"
   />
 
   <!-- CodeMirror 5：编辑器 -->
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/lib/codemirror.min.css" />
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/theme/material-darker.min.css" />
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/lib/codemirror.min.css" integrity="sha384-phfEUVAmRZV1Pzn/Xgxc3NH6zPMDuer0wHU9jRQKhNBBLyV4MP1gaBY1sxfxxPRT" crossorigin="anonymous" />
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/theme/material-darker.min.css" integrity="sha384-taFaaS975Q8MrqKRHLJ5eZcZoGrPsLzg7IR+pbYWFZQ4CprQ4Xw6BZKtN8FRcJ5L" crossorigin="anonymous" />
 
   <!-- highlight.js：代码块高亮（预览区） -->
   <link
     rel="stylesheet"
     href="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/styles/github-dark.min.css"
+    integrity="sha384-wH75j6z1lH97ZOpMOInqhgKzFkAInZPPSPlZpYKYTOqsaizPvhQZmAtLcPKXpLyH"
+    crossorigin="anonymous"
   />
 
   <!-- KaTeX：LaTeX 数学公式渲染 -->
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css" />
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css" integrity="sha384-nB0miv6/jRmo5UMMR1wu3Gz6NLsoTkbqJghGIsx//Rlm+ZU03BU6SQNC66uf4l5+" crossorigin="anonymous" />
 
   <link rel="stylesheet" href="style.css" />
 </head>
-<body>
+<body data-theme="dark">
   <!-- 顶部工具栏 -->
   <header class="toolbar">
     <div class="toolbar-left">
@@ -144,7 +150,7 @@
         </div>
       </div>
       <div class="document-list" id="document-list" role="listbox" aria-label="已保存文档"></div>
-      <div class="document-sidebar-resizer" id="document-sidebar-resizer" title="拖动调整侧边栏宽度"></div>
+      <div class="document-sidebar-resizer" id="document-sidebar-resizer" title="拖动或使用左右方向键调整侧边栏宽度" role="separator" tabindex="0" aria-label="调整文档侧边栏宽度" aria-orientation="vertical" aria-valuemin="180" aria-valuemax="420" aria-valuenow="248"></div>
     </aside>
 
     <section class="pane pane-editor">
@@ -250,7 +256,7 @@
           </button>
           <!-- 溢出折叠：宽度不足时把放不下的按钮收进这个下拉里 -->
           <div class="editor-tool-more-wrap" data-overflow-hidden>
-            <button class="editor-tool-btn editor-tool-more" id="btn-toolbar-more" type="button" title="更多" aria-haspopup="true" aria-expanded="false">
+            <button class="editor-tool-btn editor-tool-more" id="btn-toolbar-more" type="button" title="更多" aria-haspopup="true" aria-controls="editor-tool-popup" aria-expanded="false">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                 <circle cx="5" cy="12" r="1.6" />
                 <circle cx="12" cy="12" r="1.6" />
@@ -262,11 +268,11 @@
         </div>
       </div>
       <div class="pane-body">
-        <textarea id="editor"></textarea>
+        <textarea id="editor" aria-label="Markdown 编辑器"></textarea>
       </div>
     </section>
 
-    <div class="splitter" id="splitter" title="拖动调整宽度">
+    <div class="splitter" id="splitter" title="拖动或使用左右方向键调整编辑与预览宽度" role="separator" tabindex="0" aria-label="调整编辑和预览区域宽度" aria-orientation="vertical" aria-valuemin="0" aria-valuenow="50" aria-valuemax="100" aria-valuetext="编辑区和预览区各占一半">
       <div class="splitter-handle"></div>
     </div>
 
@@ -310,30 +316,32 @@
   </footer>
 
   <!-- Toast 提示容器 -->
-  <div class="toast-container" id="toast-container"></div>
+  <div class="toast-container" id="toast-container" role="status" aria-live="polite" aria-atomic="false"></div>
 
   <!-- 第三方依赖（顺序很重要） -->
   <!-- marked：markdown -> html -->
-  <script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js" integrity="sha384-/TQbtLCAerC3jgaim+N78RZSDYV7ryeoBCVqTuzRrFec2akfBkHS7ACQ3PQhvMVi" crossorigin="anonymous"></script>
+  <!-- DOMPurify：清理 marked 生成的 HTML，阻止上传文档执行脚本 -->
+  <script defer src="https://cdn.jsdelivr.net/npm/dompurify@3.4.12/dist/purify.min.js" integrity="sha384-piCcpDdJ7qVeK4Tv8Z6Hpcr3ZBIgP16TxQTPVfsLFdZ5uDgwc3Y8Ho7oUnqf12qu" crossorigin="anonymous"></script>
   <!-- highlight.js：代码高亮（注意必须用浏览器 UMD 版，不能用 npm 的 lib/*.js） -->
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+  <script defer src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js" integrity="sha384-F/bZzf7p3Joyp5psL90p/p89AZJsndkSoGwRpXcZhleCWhd8SnRuoYo4d0yirjJp" crossorigin="anonymous"></script>
   <!-- KaTeX：公式渲染 -->
-  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
-  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js" integrity="sha384-7zkQWkzuo3B5mTepMUcHkMB5jZaolc2xDwL6VFqjFALcbeS9Ggm/Yr2r3Dy4lfFg" crossorigin="anonymous"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js" integrity="sha384-43gviWU0YVjaDtb/GhzOouOXtZMP/7XUzwPTstBeZFe/+rCMvRwr4yROQP43s0Xk" crossorigin="anonymous"></script>
   <!-- Mermaid：图表 -->
-  <script src="https://cdn.jsdelivr.net/npm/mermaid@10.9.1/dist/mermaid.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/mermaid@10.9.1/dist/mermaid.min.js" integrity="sha384-WmdflGW9aGfoBdHc4rRyWzYuAjEmDwMdGdiPNacbwfGKxBW/SO6guzuQ76qjnSlr" crossorigin="anonymous"></script>
   <!-- CodeMirror 编辑器 -->
-  <script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/lib/codemirror.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/addon/mode/overlay.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/mode/markdown/markdown.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/mode/xml/xml.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/mode/javascript/javascript.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/mode/css/css.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/mode/gfm/gfm.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/addon/edit/continuelist.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/addon/selection/active-line.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/addon/display/placeholder.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/lib/codemirror.min.js" integrity="sha384-CtBuRlcKITyrd+aBeTPNFB1/T8+kvtNQiWMCLtiGvD6NpLOJAdt8e8PpJJ2Gn1D0" crossorigin="anonymous"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/addon/mode/overlay.min.js" integrity="sha384-bfaVMC9rEsbGzBv7JxR3QwHXk+En/o/APWe4jI+OW0kUnKt5JhoCbgiUfpSdzbJV" crossorigin="anonymous"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/mode/markdown/markdown.min.js" integrity="sha384-au9G+5BJx68S6rvIyVTP+BgHRPqq5agqFeE/D1rERUwqkONMoVCaxX0HFHJAQC+X" crossorigin="anonymous"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/mode/xml/xml.min.js" integrity="sha384-3lcOr/GhqbTlJj8KlqKu4T5I0FPqlJYHQF7HahKTcptzg/jdReJp8nhmUdItNhq0" crossorigin="anonymous"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/mode/javascript/javascript.min.js" integrity="sha384-mNZ6k35sVNu7sE23KjWGt9HV//tFtxOxxBee7FzGSe32oiIpEd2jtDYWLJyciRSy" crossorigin="anonymous"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/mode/css/css.min.js" integrity="sha384-NkxEGGROUEEdSnL9fe7+sHh7etzS2GkUcwyirQtcV2pYmnaXTJ9no9lSm8PmwCpj" crossorigin="anonymous"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/mode/gfm/gfm.min.js" integrity="sha384-Hl9gSFow+0kuxGEenT9KqZCKop9qUNwoYoK0NTB7/d+DxVi5RBz0hNGAA1LUjQU6" crossorigin="anonymous"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/addon/edit/continuelist.min.js" integrity="sha384-GHY+56lZ8piJ+42032hO1QHbze1wBL5ieiPv+MeJUp9ezA8ioM23IcgRmelOspoJ" crossorigin="anonymous"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/addon/selection/active-line.min.js" integrity="sha384-OdPgrSMBjPwcIMVVp/q5zvAbO/B1hy5GUfWZ4BqrdEEimOxTJvl9By1mQ6mkRY/T" crossorigin="anonymous"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/addon/display/placeholder.min.js" integrity="sha384-O0DuWGBNJj17mYf+1lom65zfJgj2bWJvTEPoRpMKZUs04iYZucr/coJ8ng8wHy7h" crossorigin="anonymous"></script>
 
-  <script src="app.js?v=21"></script>
+  <script defer src="app.js?v=22"></script>
 </body>
 </html>

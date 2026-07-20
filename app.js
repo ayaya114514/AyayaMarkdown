@@ -24,6 +24,9 @@
   // 因此必须在第一次 schedulePreview 之前完成声明
   let renderTimer = null;
   let saveTimer = null;
+  let renderVersion = 0;
+  let storageWriteChain = Promise.resolve();
+  const persistedDocumentVersions = new Map();
   let isDragging = false;
   let isSidebarResizing = false;
   // 拖动起始锚点：避免按下时按"鼠标绝对位置"重算宽度导致瞬移，改成基于按下那一刻的宽度做增量计算
@@ -31,6 +34,7 @@
   let sidebarDragStartWidth = 0;
   let splitterDragStartX = 0;
   let splitterDragStartEditorWidth = 0;
+  let activeResizePointerId = null;
   let documents = [];
   let activeDocId = null;
   let isLoadingDocument = false;
@@ -153,6 +157,62 @@ sequenceDiagram
   const statLines = $("#stat-lines");
   const toastContainer = $("#toast-container");
 
+  const requiredDependencies = {
+    marked: window.marked,
+    DOMPurify: window.DOMPurify,
+    highlight: window.hljs,
+    Mermaid: window.mermaid,
+    KaTeX: window.katex,
+    "KaTeX auto-render": window.renderMathInElement,
+    CodeMirror: window.CodeMirror,
+  };
+  const missingDependencies = Object.entries(requiredDependencies)
+    .filter(([, value]) => !value)
+    .map(([name]) => name);
+
+  if (missingDependencies.length) {
+    editorEl.disabled = true;
+    previewEl.textContent = `页面依赖加载失败：${missingDependencies.join("、")}。请检查网络后刷新。`;
+    console.error("Missing runtime dependencies:", missingDependencies);
+    return;
+  }
+
+  let uiStorageFailureShown = false;
+
+  function safeStorageGet(key) {
+    try {
+      return localStorage.getItem(key);
+    } catch (e) {
+      console.warn("读取 localStorage 失败:", e);
+      return null;
+    }
+  }
+
+  function safeStorageSet(key, value) {
+    try {
+      localStorage.setItem(key, value);
+      return true;
+    } catch (e) {
+      console.warn("写入 localStorage 失败:", e);
+      if (!uiStorageFailureShown) {
+        uiStorageFailureShown = true;
+        // 初始主题/侧边栏设置发生在 Toast 常量初始化之前，延后到当前脚本执行完再提示。
+        queueMicrotask(() => {
+          showToast("界面设置无法保存，但文档仍会尝试保存到 IndexedDB", "error");
+        });
+      }
+      return false;
+    }
+  }
+
+  function safeStorageRemove(key) {
+    try {
+      localStorage.removeItem(key);
+    } catch (e) {
+      console.warn("清理 localStorage 失败:", e);
+    }
+  }
+
   /* =============================================================
    * 1. 侧边栏显示状态
    * 把折叠状态存到 localStorage，刷新后保持选择
@@ -175,7 +235,7 @@ sequenceDiagram
   }
 
   function getInitialSidebarWidth() {
-    const rawWidth = localStorage.getItem(SIDEBAR_WIDTH_KEY);
+    const rawWidth = safeStorageGet(SIDEBAR_WIDTH_KEY);
     const saved = rawWidth === null ? NaN : Number(rawWidth);
     return clampSidebarWidth(Number.isFinite(saved) ? saved : 248);
   }
@@ -183,19 +243,21 @@ sequenceDiagram
   function applySidebarWidth(width, shouldPersist = true) {
     const nextWidth = clampSidebarWidth(width);
     document.documentElement.style.setProperty("--sidebar-width", `${nextWidth}px`);
-    if (shouldPersist) localStorage.setItem(SIDEBAR_WIDTH_KEY, String(nextWidth));
+    if (shouldPersist) safeStorageSet(SIDEBAR_WIDTH_KEY, String(nextWidth));
+    sidebarResizer.setAttribute("aria-valuemax", String(Math.round(getMaxSidebarWidth())));
+    sidebarResizer.setAttribute("aria-valuenow", String(nextWidth));
     if (window.cm) {
       requestAnimationFrame(() => window.cm.refresh());
     }
   }
 
   function isSidebarCollapsed() {
-    return localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === "true";
+    return safeStorageGet(SIDEBAR_COLLAPSED_KEY) === "true";
   }
 
   function applySidebarState(collapsed) {
     document.body.classList.toggle("sidebar-collapsed", collapsed);
-    localStorage.setItem(SIDEBAR_COLLAPSED_KEY, collapsed ? "true" : "false");
+    safeStorageSet(SIDEBAR_COLLAPSED_KEY, collapsed ? "true" : "false");
     sidebarToggle.setAttribute("aria-expanded", String(!collapsed));
     sidebarToggle.setAttribute("aria-label", collapsed ? "显示侧边栏" : "隐藏侧边栏");
     sidebarToggle.title = collapsed ? "显示侧边栏" : "隐藏侧边栏";
@@ -228,7 +290,8 @@ sequenceDiagram
       window.mermaid.initialize({
         startOnLoad: false,
         theme: "dark",
-        securityLevel: "loose",
+        securityLevel: "strict",
+        htmlLabels: false,
         fontFamily: "Inter, sans-serif",
       });
       // 让预览刷新一次以重渲染图表
@@ -238,7 +301,7 @@ sequenceDiagram
 
   applyTheme();
   // 清理历史 localStorage 里的主题 key（旧版本残留）
-  localStorage.removeItem("md-editor-theme");
+  safeStorageRemove("md-editor-theme");
 
   /* =============================================================
    * 3. marked 配置：开启 GFM、自动换行、代码高亮
@@ -257,6 +320,16 @@ sequenceDiagram
       .replace(/>/g, "&gt;")
       .replace(/"/g, "&quot;")
       .replace(/'/g, "&#39;");
+  }
+
+  function parseAndSanitizeMarkdown(md) {
+    const parsed = marked.parse(md);
+    return DOMPurify.sanitize(parsed, {
+      USE_PROFILES: { html: true, svg: true, svgFilters: true },
+      FORBID_TAGS: ["style", "iframe", "object", "embed", "form"],
+      FORBID_ATTR: ["style"],
+      ALLOW_DATA_ATTR: true,
+    });
   }
 
   /* ---------- 数学公式扩展 ----------
@@ -492,6 +565,7 @@ sequenceDiagram
     },
   });
   window.cm = cm;
+  cm.getInputField().setAttribute("aria-label", editorEl.getAttribute("aria-label") || "Markdown 编辑器");
   requestAnimationFrame(() => cm.refresh());
 
   /* =============================================================
@@ -499,13 +573,54 @@ sequenceDiagram
    * ============================================================= */
   function schedulePreview() {
     clearTimeout(renderTimer);
-    renderTimer = setTimeout(renderPreview, 120);
+    renderTimer = setTimeout(() => void renderPreview(), 120);
   }
 
-  function renderPreview() {
+  function bindCopyButtons(root) {
+    root.querySelectorAll(".copy-btn").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const code = decodeURIComponent(btn.dataset.code || "");
+        copyToClipboard(code);
+        const original = btn.innerHTML;
+        btn.innerHTML = "✓ 已复制";
+        setTimeout(() => (btn.innerHTML = original), 1500);
+      });
+    });
+  }
+
+  async function renderMarkdownInto(root, md, { interactive = false } = {}) {
+    root.innerHTML = parseAndSanitizeMarkdown(md);
+
+    // KaTeX auto-render 会扫描 $...$ 与 $$...$$。
+    window.renderMathInElement(root, {
+      delimiters: [
+        { left: "$$", right: "$$", display: true },
+        { left: "$", right: "$", display: false },
+        { left: "\\(", right: "\\)", display: false },
+        { left: "\\[", right: "\\]", display: true },
+      ],
+      throwOnError: false,
+    });
+
+    const mermaidNodes = root.querySelectorAll(".mermaid");
+    mermaidNodes.forEach((node) => node.removeAttribute("data-processed"));
+    if (mermaidNodes.length) {
+      try {
+        await window.mermaid.run({ nodes: mermaidNodes });
+      } catch (e) {
+        console.warn("Mermaid 渲染失败:", e);
+      }
+    }
+
+    assignHeadingIds(root);
+    if (interactive) bindCopyButtons(root);
+  }
+
+  async function renderPreview() {
     // 编辑器尚未初始化时直接跳过，避免在启动早期（如主题初始化）误调
     if (!window.cm) return;
     const md = cm.getValue();
+    const currentRenderVersion = ++renderVersion;
 
     // 统计放最前面、独立 try-catch，
     // 这样即便后续 marked / KaTeX / Mermaid 任何一个抛错，统计都还是会更新
@@ -515,65 +630,14 @@ sequenceDiagram
       console.error("updateStats failed:", e);
     }
 
-    // 1) marked 渲染主体
-    let html = "";
     try {
-      html = marked.parse(md);
+      await renderMarkdownInto(previewEl, md, { interactive: true });
     } catch (e) {
-      console.error("marked.parse failed:", e);
-      previewEl.innerHTML =
-        '<p style="color:#ef4444">渲染失败，请打开浏览器控制台查看详情。</p>';
+      console.error("Markdown preview render failed:", e);
+      previewEl.textContent = "渲染失败，请打开浏览器控制台查看详情。";
       return;
     }
-    previewEl.innerHTML = html;
-
-    // 2) KaTeX 渲染数学公式（auto-render 会扫描 $...$ 与 $$...$$）
-    if (window.renderMathInElement) {
-      try {
-        window.renderMathInElement(previewEl, {
-          delimiters: [
-            { left: "$$", right: "$$", display: true },
-            { left: "$", right: "$", display: false },
-            { left: "\\(", right: "\\)", display: false },
-            { left: "\\[", right: "\\]", display: true },
-          ],
-          throwOnError: false,
-        });
-      } catch (e) {
-        console.warn("KaTeX 渲染失败:", e);
-      }
-    }
-
-    // 3) Mermaid 渲染图表
-    if (window.mermaid) {
-      const mermaidNodes = previewEl.querySelectorAll(".mermaid");
-      // mermaid v10 需要每个节点 removeAttribute('data-processed') 才能重新渲染
-      mermaidNodes.forEach((node) => node.removeAttribute("data-processed"));
-      try {
-        const result = window.mermaid.run({ nodes: mermaidNodes });
-        if (result && typeof result.catch === "function") {
-          result.catch((e) => console.warn("Mermaid 渲染失败:", e));
-        }
-      } catch (e) {
-        console.warn("Mermaid 渲染失败:", e);
-      }
-    }
-
-    // 4) 给代码块的复制按钮绑定事件
-    previewEl.querySelectorAll(".copy-btn").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        const code = decodeURIComponent(btn.dataset.code || "");
-        copyToClipboard(code);
-        const original = btn.innerHTML;
-        btn.innerHTML = "✓ 已复制";
-        setTimeout(() => (btn.innerHTML = original), 1500);
-      });
-    });
-
-    // 5) 给所有标题生成稳定 id，便于目录锚点跳转
-    //    规则尽量贴近 GitHub：小写、空白转 -、剥离常见标点；CJK 字符原样保留
-    //    重复 slug 用 -1 / -2 ... 后缀避免冲突
-    assignHeadingIds(previewEl);
+    if (currentRenderVersion !== renderVersion) return;
 
     // 切换文档时（lastJumpFrom 记录的 docId 已不是当前 doc）记录失效，隐藏返回按钮。
     // 仅在编辑当前文档导致的重新渲染时不清，保持返回按钮可用 —— previewScroll 滚动位置不会因 innerHTML 重置归零，回跳依然有意义。
@@ -581,7 +645,7 @@ sequenceDiagram
       hideJumpBackBtn();
     }
 
-    // 6) 文档切换后恢复阅读进度：等到本次 DOM 渲染完成后再设置预览滚动位置
+    // 文档切换后恢复阅读进度：等到本次 DOM 渲染完成后再设置预览滚动位置
     //    用两次 rAF 让浏览器把布局算完，避免设了之后被立即覆盖
     if (pendingPreviewScrollTop != null) {
       const target = pendingPreviewScrollTop;
@@ -714,11 +778,15 @@ sequenceDiagram
   // heightAtLine 比 charCoords 更稳定：charCoords 对未渲染的视口外行只给估算值，
   // 跨长距离跳转时容易偏；heightAtLine 用 CodeMirror 内部行高累计树，无论行在不在视口都准确。
   // 不做延迟校正：动画期间用 instant scroll 打断 smooth 会造成"突然卡住"的视觉。
+  function preferredScrollBehavior() {
+    return window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth";
+  }
+
   function smoothScrollEditorToLine(lineNo) {
     if (!window.cm) return;
     const scroller = cm.getScrollerElement();
     const target = Math.max(0, cm.heightAtLine(lineNo, "local") - 12);
-    scroller.scrollTo({ top: target, behavior: "smooth" });
+    scroller.scrollTo({ top: target, behavior: preferredScrollBehavior() });
   }
 
   // 把预览区平滑滚动到目标元素。
@@ -733,7 +801,7 @@ sequenceDiagram
         + previewScroll.scrollTop
         - 24
     );
-    previewScroll.scrollTo({ top: target, behavior: "smooth" });
+    previewScroll.scrollTo({ top: target, behavior: preferredScrollBehavior() });
   }
 
   // 拦截预览区里所有锚点链接（[xx](#anchor)）：在容器内部滚动到目标，并记录跳转前位置
@@ -810,11 +878,11 @@ sequenceDiagram
         hideJumpBackBtn();
         return;
       }
-      previewScroll.scrollTo({ top: lastJumpFrom.previewTop, behavior: "smooth" });
+      previewScroll.scrollTo({ top: lastJumpFrom.previewTop, behavior: preferredScrollBehavior() });
       if (window.cm) {
         cm.getScrollerElement().scrollTo({
           top: lastJumpFrom.editorTop,
-          behavior: "smooth",
+          behavior: preferredScrollBehavior(),
         });
       }
       hideJumpBackBtn();
@@ -847,7 +915,7 @@ sequenceDiagram
   }
 
   /* =============================================================
-   * 7. 多文档管理：保存到 localStorage，支持新建/上传/切换
+   * 7. 多文档管理：内容保存到 IndexedDB，UI 状态保存到 localStorage
    * ============================================================= */
   const DOCUMENTS_KEY = "md-editor-documents";
   const ACTIVE_DOCUMENT_KEY = "md-editor-active-document";
@@ -881,8 +949,22 @@ sequenceDiagram
           db.createObjectStore(IDB_STORE, { keyPath: "id" });
         }
       };
-      req.onsuccess = () => resolve(req.result);
-      req.onerror = () => reject(req.error);
+      req.onsuccess = () => {
+        const db = req.result;
+        db.onversionchange = () => {
+          db.close();
+          idbPromise = null;
+        };
+        resolve(db);
+      };
+      req.onerror = () => {
+        idbPromise = null;
+        reject(req.error);
+      };
+      req.onblocked = () => {
+        idbPromise = null;
+        reject(new Error("IndexedDB 升级被其他标签页阻塞"));
+      };
     });
     return idbPromise;
   }
@@ -897,8 +979,7 @@ sequenceDiagram
     });
   }
 
-  // 整库覆盖写：实现简单且 IDB 内部会把这些操作放在同一个事务里，原子完成。
-  // 单文档量级（即便几十个长文档）下性能完全够，没必要做增量。
+  // 仅用于旧数据迁移和首次初始化；日常保存走单文档 put，避免每次输入重写整库。
   async function idbWriteAll(docs) {
     const db = await openIdb();
     return new Promise((resolve, reject) => {
@@ -910,6 +991,83 @@ sequenceDiagram
       tx.onerror = () => reject(tx.error);
       tx.onabort = () => reject(tx.error);
     });
+  }
+
+  class DocumentConflictError extends Error {
+    constructor(docId) {
+      super(`文档 ${docId} 已在另一个标签页中更新`);
+      this.name = "DocumentConflictError";
+    }
+  }
+
+  async function idbPutDocument(doc, expectedUpdatedAt) {
+    const db = await openIdb();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(IDB_STORE, "readwrite");
+      const store = tx.objectStore(IDB_STORE);
+      let conflict = null;
+      const getRequest = store.get(doc.id);
+      getRequest.onsuccess = () => {
+        const storedVersion = Number(getRequest.result?.updatedAt) || 0;
+        if (storedVersion !== expectedUpdatedAt) {
+          conflict = new DocumentConflictError(doc.id);
+          tx.abort();
+          return;
+        }
+        store.put(doc);
+      };
+      getRequest.onerror = () => reject(getRequest.error);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+      tx.onabort = () => reject(conflict || tx.error);
+    });
+  }
+
+  async function idbDeleteDocument(docId, expectedUpdatedAt) {
+    const db = await openIdb();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(IDB_STORE, "readwrite");
+      const store = tx.objectStore(IDB_STORE);
+      let conflict = null;
+      const getRequest = store.get(docId);
+      getRequest.onsuccess = () => {
+        const storedVersion = Number(getRequest.result?.updatedAt) || 0;
+        if (storedVersion !== expectedUpdatedAt) {
+          conflict = new DocumentConflictError(docId);
+          tx.abort();
+          return;
+        }
+        store.delete(docId);
+      };
+      getRequest.onerror = () => reject(getRequest.error);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+      tx.onabort = () => reject(conflict || tx.error);
+    });
+  }
+
+  function enqueueStorageWrite(operation, showError = false) {
+    const task = storageWriteChain.then(operation);
+    storageWriteChain = task.catch(() => undefined);
+    return task.then(
+      () => {
+        storageFailureShown = false;
+        return true;
+      },
+      (e) => {
+        console.warn("保存文档到 IndexedDB 失败:", e);
+        if (e instanceof DocumentConflictError) {
+          showToast("另一标签页已更新此文档；本页未覆盖远端版本，请导出备份后刷新", "error");
+          return false;
+        }
+        if (showError || !storageFailureShown) {
+          showToast("文档保存失败，可能是浏览器本地空间不足", "error");
+          void checkStorageQuota();
+        }
+        storageFailureShown = true;
+        return false;
+      }
+    );
   }
 
   // 估算本地存储用量；Chrome/Firefox 实测 quota 一般是磁盘空闲的几十 %，
@@ -1009,7 +1167,7 @@ sequenceDiagram
   // 读取旧版本写在 localStorage 里的文档（仅迁移用，迁移完即删掉老 key）
   function readLegacyLocalStorageDocuments() {
     try {
-      const raw = localStorage.getItem(DOCUMENTS_KEY);
+      const raw = safeStorageGet(DOCUMENTS_KEY);
       if (!raw) return [];
 
       const parsed = JSON.parse(raw);
@@ -1043,7 +1201,7 @@ sequenceDiagram
         try {
           await idbWriteAll(loaded);
           // 迁移成功才删 localStorage 里的老数据，失败保留以便下次重试
-          localStorage.removeItem(DOCUMENTS_KEY);
+          safeStorageRemove(DOCUMENTS_KEY);
           console.log("[AyayaMarkdown] 已从 localStorage 迁移文档到 IndexedDB");
         } catch (e) {
           console.warn("迁移到 IndexedDB 失败，保留 localStorage 中的副本:", e);
@@ -1053,7 +1211,7 @@ sequenceDiagram
 
     // 3) 还是空，使用更早期的 LEGACY_DRAFT 或默认欢迎文档
     if (!loaded.length) {
-      const legacyDraft = localStorage.getItem(LEGACY_DRAFT_KEY);
+      const legacyDraft = safeStorageGet(LEGACY_DRAFT_KEY);
       const content = legacyDraft && legacyDraft.length > 0 ? legacyDraft : DEFAULT_DOC;
       loaded = [
         createDocumentRecord({
@@ -1062,48 +1220,50 @@ sequenceDiagram
           source: legacyDraft ? "created" : "sample",
         }),
       ];
-      localStorage.removeItem(LEGACY_DRAFT_KEY);
+      safeStorageRemove(LEGACY_DRAFT_KEY);
       try {
         await idbWriteAll(loaded);
       } catch (_) {
-        // 即便首次写失败也不影响进入界面，后续 persistDocuments 还会重试
+        // 即便首次写失败也不影响进入界面，后续单文档保存还会重试
       }
     }
 
-    documents = loaded;
+    documents = loaded.sort((a, b) => {
+      const timeDiff = b.createdAt - a.createdAt;
+      return timeDiff || b.id.localeCompare(a.id);
+    });
+    persistedDocumentVersions.clear();
+    documents.forEach((doc) => persistedDocumentVersions.set(doc.id, doc.updatedAt));
 
-    const storedActiveId = localStorage.getItem(ACTIVE_DOCUMENT_KEY);
+    const storedActiveId = safeStorageGet(ACTIVE_DOCUMENT_KEY);
     activeDocId = documents.some((doc) => doc.id === storedActiveId)
       ? storedActiveId
       : documents[0].id;
-    localStorage.setItem(ACTIVE_DOCUMENT_KEY, activeDocId);
+    safeStorageSet(ACTIVE_DOCUMENT_KEY, activeDocId);
   }
 
   function getActiveDocument() {
     return documents.find((doc) => doc.id === activeDocId) || documents[0] || null;
   }
 
-  // 把文档写入 IndexedDB；调用方一般 fire-and-forget（不 await），
-  // IDB 自身的事务队列会保证写入顺序，错误统一在内部 toast 提示。
-  //
-  // 副作用：activeDocId 同步写到 localStorage（小数据，不进 IDB）。
-  // 注意：beforeunload 里调用时 IDB 写可能完成不了，所以 change → IDB 的防抖间隔
-  //      要短一点（saveTimer 那边设的 500ms），权衡了一下没改，关页面最多丢半秒输入。
-  async function persistDocuments(showError = false) {
-    if (activeDocId) localStorage.setItem(ACTIVE_DOCUMENT_KEY, activeDocId);
-    try {
-      await idbWriteAll(documents);
-      storageFailureShown = false;
-      return true;
-    } catch (e) {
-      console.warn("保存文档列表到 IndexedDB 失败:", e);
-      if (showError || !storageFailureShown) {
-        showToast("文档保存失败，可能是浏览器本地空间不足", "error");
-        checkStorageQuota();
-      }
-      storageFailureShown = true;
-      return false;
-    }
+  function persistDocument(doc, showError = false) {
+    if (!doc) return Promise.resolve(false);
+    if (activeDocId) safeStorageSet(ACTIVE_DOCUMENT_KEY, activeDocId);
+    // 捕获调用时的不可变快照，避免排队期间被后续输入改写。
+    const snapshot = { ...doc };
+    return enqueueStorageWrite(async () => {
+      const expectedUpdatedAt = persistedDocumentVersions.get(snapshot.id) || 0;
+      await idbPutDocument(snapshot, expectedUpdatedAt);
+      persistedDocumentVersions.set(snapshot.id, snapshot.updatedAt);
+    }, showError);
+  }
+
+  function removeDocumentFromStorage(docId, showError = false) {
+    return enqueueStorageWrite(async () => {
+      const expectedUpdatedAt = persistedDocumentVersions.get(docId) || 0;
+      await idbDeleteDocument(docId, expectedUpdatedAt);
+      persistedDocumentVersions.delete(docId);
+    }, showError);
   }
 
   function updateDocumentSnapshot(doc, content) {
@@ -1127,21 +1287,21 @@ sequenceDiagram
 
     clearTimeout(saveTimer);
     saveTimer = setTimeout(() => {
-      persistDocuments();
+      void persistDocument(doc);
       renderDocumentList();
-    }, 500);
+    }, 250);
   }
 
   function flushCurrentDocument() {
     clearTimeout(saveTimer);
-    if (!window.cm || !activeDocId || isLoadingDocument) return;
+    if (!window.cm || !activeDocId || isLoadingDocument) return Promise.resolve(false);
 
     const doc = getActiveDocument();
-    if (!doc) return;
+    if (!doc) return Promise.resolve(false);
 
     updateDocumentSnapshot(doc, cm.getValue());
-    persistDocuments(true);
     renderDocumentList();
+    return persistDocument(doc, true);
   }
 
   // 记录当前活动文档的滚动位置（编辑器 + 预览），供切换回来时恢复用
@@ -1195,9 +1355,9 @@ sequenceDiagram
     captureCurrentScroll();
     // 切换文档前清掉"跳转返回"状态：滚动位置属于上一篇文档，留着会跳错位置
     hideJumpBackBtn();
-    flushCurrentDocument();
+    void flushCurrentDocument();
     activeDocId = next.id;
-    persistDocuments(true);
+    safeStorageSet(ACTIVE_DOCUMENT_KEY, activeDocId);
     loadActiveDocumentIntoEditor();
   }
 
@@ -1208,21 +1368,23 @@ sequenceDiagram
     const doc = documents[index];
     if (!confirm(`删除“${doc.title}”？`)) return;
 
-    flushCurrentDocument();
+    void flushCurrentDocument();
     const wasActive = doc.id === activeDocId;
     documents.splice(index, 1);
+    void removeDocumentFromStorage(doc.id, true);
 
     if (!documents.length) {
-      documents.push(createDocumentRecord({ title: "未命名文档", content: "" }));
+      const replacement = createDocumentRecord({ title: "未命名文档", content: "" });
+      documents.push(replacement);
+      void persistDocument(replacement, true);
     }
 
     if (wasActive) {
       const next = documents[Math.min(index, documents.length - 1)];
       activeDocId = next.id;
-      persistDocuments(true);
+      safeStorageSet(ACTIVE_DOCUMENT_KEY, activeDocId);
       loadActiveDocumentIntoEditor();
     } else {
-      persistDocuments(true);
       renderDocumentList();
     }
 
@@ -1290,18 +1452,22 @@ sequenceDiagram
     if (switchButton) switchDocument(switchButton.dataset.docId);
   });
 
-  window.addEventListener("beforeunload", flushCurrentDocument);
+  window.addEventListener("beforeunload", () => void flushCurrentDocument());
+  window.addEventListener("pagehide", () => void flushCurrentDocument());
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden") void flushCurrentDocument();
+  });
 
   /* =============================================================
    * 8. 文件操作：新建 / 上传 / 导出
    * ============================================================= */
   function newDocument() {
-    flushCurrentDocument();
+    void flushCurrentDocument();
 
     const doc = createDocumentRecord({ title: "未命名文档", content: "" });
     documents.unshift(doc);
     activeDocId = doc.id;
-    persistDocuments(true);
+    void persistDocument(doc, true);
     loadActiveDocumentIntoEditor();
     cm.focus();
     showToast("已新建空白文档", "info");
@@ -1323,10 +1489,10 @@ sequenceDiagram
         source: "uploaded",
       });
 
-      flushCurrentDocument();
+      void flushCurrentDocument();
       documents.unshift(doc);
       activeDocId = doc.id;
-      persistDocuments(true);
+      void persistDocument(doc, true);
       loadActiveDocumentIntoEditor();
       showToast(`已添加 ${file.name}`, "success");
     };
@@ -1337,7 +1503,7 @@ sequenceDiagram
   });
 
   function exportMarkdown() {
-    flushCurrentDocument();
+    void flushCurrentDocument();
     const md = cm.getValue();
     if (!md.trim()) {
       showToast("内容为空，无法导出", "error");
@@ -1348,42 +1514,70 @@ sequenceDiagram
     showToast(`已导出 ${filename}`, "success");
   }
 
-  function exportHtml() {
-    flushCurrentDocument();
-    const md = cm.getValue();
-    if (!md.trim()) {
-      showToast("内容为空，无法导出", "error");
-      return;
+  async function renderExportBody(md) {
+    const host = document.createElement("div");
+    host.className = "export-render-host";
+    host.setAttribute("aria-hidden", "true");
+    const root = document.createElement("article");
+    root.className = "markdown-body";
+    host.appendChild(root);
+    document.body.appendChild(host);
+
+    try {
+      await renderMarkdownInto(root, md);
+      root.querySelectorAll(".copy-btn").forEach((button) => button.remove());
+      return root.innerHTML;
+    } finally {
+      host.remove();
     }
-    // 把当前预览区的 HTML 嵌入一个完整的、自包含的 HTML 文档
-    // CDN 引入 KaTeX/highlight.js 的样式，这样导出的文件双击打开就能直接看
-    const bodyHtml = previewEl.innerHTML;
-    const title = inferFilename(md, getActiveDocument()?.title);
-    const fullHtml = buildExportableHtml(title, bodyHtml);
-    downloadBlob(fullHtml, title + ".html", "text/html;charset=utf-8");
-    showToast(`已导出 ${title}.html`, "success");
   }
 
-  function exportPdf() {
-    flushCurrentDocument();
+  async function exportHtml() {
+    void flushCurrentDocument();
     const md = cm.getValue();
     if (!md.trim()) {
       showToast("内容为空，无法导出", "error");
       return;
     }
-    // 思路：用浏览器自带的"打印为 PDF"。
-    // 把已经渲染好的预览 HTML 塞进新窗口（连带 KaTeX/highlight.js 的 CSS），
-    // 等样式加载好后调 print()，用户在打印对话框里选「另存为 PDF」即可。
-    // 这样做的好处：中文/公式/Mermaid 渲染保真度高，无需引入新依赖。
-    const bodyHtml = previewEl.innerHTML;
-    const title = inferFilename(md, getActiveDocument()?.title);
-    const fullHtml = buildExportableHtml(title, bodyHtml);
+    try {
+      const bodyHtml = await renderExportBody(md);
+      const title = inferFilename(md, getActiveDocument()?.title);
+      const fullHtml = buildExportableHtml(title, bodyHtml);
+      downloadBlob(fullHtml, title + ".html", "text/html;charset=utf-8");
+      showToast(`已导出 ${title}.html`, "success");
+    } catch (e) {
+      console.error("HTML export failed:", e);
+      showToast("HTML 导出失败，请检查文档中的 Mermaid 语法", "error");
+    }
+  }
 
+  async function exportPdf() {
+    void flushCurrentDocument();
+    const md = cm.getValue();
+    if (!md.trim()) {
+      showToast("内容为空，无法导出", "error");
+      return;
+    }
+    // 必须在用户点击的同步阶段打开窗口，否则等待 Mermaid 后会被 popup blocker 拦截。
     const win = window.open("", "_blank");
     if (!win) {
       showToast("浏览器拦截了弹窗，请允许弹窗后重试", "error");
       return;
     }
+    win.opener = null;
+
+    let fullHtml;
+    try {
+      const bodyHtml = await renderExportBody(md);
+      const title = inferFilename(md, getActiveDocument()?.title);
+      fullHtml = buildExportableHtml(title, bodyHtml);
+    } catch (e) {
+      console.error("PDF export failed:", e);
+      win.close();
+      showToast("PDF 导出失败，请检查文档中的 Mermaid 语法", "error");
+      return;
+    }
+
     win.document.open();
     win.document.write(fullHtml);
     win.document.close();
@@ -1468,7 +1662,7 @@ sequenceDiagram
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
 
-  // 构建可独立打开的 HTML 文档（自包含样式）
+  // 构建可独立打开的 HTML 文档（排版 CSS 仍从带 SRI 的 CDN 加载）
   // 浅色 / 深色两套主题靠 prefers-color-scheme 自适应；
   // 打印 (PDF 导出) 强制浅色，避免黑底浪费墨水。
   function buildExportableHtml(title, bodyHtml) {
@@ -1476,11 +1670,13 @@ sequenceDiagram
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline' https://cdn.jsdelivr.net; font-src data: https://cdn.jsdelivr.net; img-src data: blob: https: file:; object-src 'none'; base-uri 'none'; form-action 'none'">
 <title>${escapeHtml(title)}</title>
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css" integrity="sha384-nB0miv6/jRmo5UMMR1wu3Gz6NLsoTkbqJghGIsx//Rlm+ZU03BU6SQNC66uf4l5+" crossorigin="anonymous">
 <!-- 两套 highlight.js 主题用 media query 选其一；打印时归类到浅色 -->
-<link rel="stylesheet" media="(prefers-color-scheme: light), print" href="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/styles/github.min.css">
-<link rel="stylesheet" media="(prefers-color-scheme: dark)" href="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/styles/github-dark.min.css">
+<link rel="stylesheet" media="(prefers-color-scheme: light), print" href="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/styles/github.min.css" integrity="sha384-eFTL69TLRZTkNfYZOLM+G04821K1qZao/4QLJbet1pP4tcF+fdXq/9CdqAbWRl/L" crossorigin="anonymous">
+<link rel="stylesheet" media="(prefers-color-scheme: dark)" href="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/styles/github-dark.min.css" integrity="sha384-wH75j6z1lH97ZOpMOInqhgKzFkAInZPPSPlZpYKYTOqsaizPvhQZmAtLcPKXpLyH" crossorigin="anonymous">
 <style>
   :root {
     color-scheme: light dark;
@@ -1514,6 +1710,8 @@ sequenceDiagram
   }
   h1, h2 { padding-bottom: .3em; border-bottom: 1px solid var(--border); }
   pre { background: var(--code-bg); padding: 16px; border-radius: 8px; overflow-x: auto; }
+  .code-block-wrapper { position: relative; }
+  .code-lang-label { float: right; margin: 8px 10px 0 12px; color: var(--muted); font: 600 11px/1 sans-serif; text-transform: uppercase; }
   code { font-family: "JetBrains Mono", monospace; font-size: .9em; }
   :not(pre) > code { background: var(--code-bg); padding: 2px 6px; border-radius: 4px; }
   blockquote {
@@ -1589,9 +1787,47 @@ ${bodyHtml}
   /* =============================================================
    * 10. 拖拽分割线调整左右宽度
    * ============================================================= */
-  sidebarResizer.addEventListener("mousedown", (e) => {
-    if (window.matchMedia("(max-width: 768px)").matches) return;
+  const mobileLayoutQuery = window.matchMedia("(max-width: 768px)");
+
+  function getResizableEditorWidth() {
+    const rect = workspace.getBoundingClientRect();
+    const sidebarWidth = documentSidebar ? documentSidebar.getBoundingClientRect().width : 0;
+    return rect.width - sidebarWidth - splitter.offsetWidth;
+  }
+
+  function applyEditorPaneWidth(width) {
+    if (mobileLayoutQuery.matches) return;
+    const resizableWidth = getResizableEditorWidth();
+    const min = 200;
+    if (resizableWidth <= min * 2) return;
+    const nextWidth = Math.round(Math.max(min, Math.min(resizableWidth - min, width)));
+    editorPane.style.flex = `0 0 ${nextWidth}px`;
+    previewPane.style.flex = "1";
+    const percent = Math.round((nextWidth / resizableWidth) * 100);
+    splitter.setAttribute("aria-valuenow", String(percent));
+    splitter.setAttribute("aria-valuetext", `${nextWidth} 像素，${percent}%`);
+  }
+
+  function resetSplitForMobile() {
+    if (!mobileLayoutQuery.matches) return;
+    editorPane.style.removeProperty("flex");
+    previewPane.style.removeProperty("flex");
+    splitter.setAttribute("aria-valuenow", "50");
+    splitter.setAttribute("aria-valuetext", "编辑区和预览区各占一半");
+    requestAnimationFrame(() => cm.refresh());
+  }
+
+  if (typeof mobileLayoutQuery.addEventListener === "function") {
+    mobileLayoutQuery.addEventListener("change", resetSplitForMobile);
+  } else {
+    mobileLayoutQuery.addListener(resetSplitForMobile);
+  }
+  resetSplitForMobile();
+
+  sidebarResizer.addEventListener("pointerdown", (e) => {
+    if (mobileLayoutQuery.matches || e.button !== 0) return;
     isSidebarResizing = true;
+    activeResizePointerId = e.pointerId;
     documentSidebar.classList.add("resizing");
     document.body.style.cursor = "col-resize";
     document.body.style.userSelect = "none";
@@ -1601,8 +1837,10 @@ ${bodyHtml}
     e.stopPropagation();
   });
 
-  splitter.addEventListener("mousedown", (e) => {
+  splitter.addEventListener("pointerdown", (e) => {
+    if (mobileLayoutQuery.matches || e.button !== 0) return;
     isDragging = true;
+    activeResizePointerId = e.pointerId;
     splitter.classList.add("dragging");
     document.body.style.cursor = "col-resize";
     document.body.style.userSelect = "none";
@@ -1611,7 +1849,8 @@ ${bodyHtml}
     e.preventDefault();
   });
 
-  document.addEventListener("mousemove", (e) => {
+  document.addEventListener("pointermove", (e) => {
+    if (activeResizePointerId !== null && e.pointerId !== activeResizePointerId) return;
     if (isSidebarResizing) {
       // 用按下时刻的宽度 + 鼠标位移，保证原地起拖、不瞬移
       applySidebarWidth(sidebarDragStartWidth + (e.clientX - sidebarDragStartX));
@@ -1619,36 +1858,52 @@ ${bodyHtml}
     }
 
     if (!isDragging) return;
-    const rect = workspace.getBoundingClientRect();
-    const sidebarWidth = documentSidebar ? documentSidebar.getBoundingClientRect().width : 0;
-    const resizableWidth = rect.width - sidebarWidth - splitter.offsetWidth;
-    // 最小 200px，避免拖到看不见
-    const min = 200;
-    if (resizableWidth <= min * 2) return;
-    const max = resizableWidth - min;
     let leftWidth = splitterDragStartEditorWidth + (e.clientX - splitterDragStartX);
-    leftWidth = Math.max(min, Math.min(max, leftWidth));
-    // 直接用像素：之前用 percent 是相对 workspace 算的，但 percent 又是按"减去 sidebar 后的宽度"得出，
-    // 开启侧边栏后两者基数不一致，会让真实宽度被放大，按下瞬间就跳一下
-    editorPane.style.flex = `0 0 ${leftWidth}px`;
-    previewPane.style.flex = "1";
+    applyEditorPaneWidth(leftWidth);
   });
 
-  document.addEventListener("mouseup", () => {
+  function finishResize(e) {
+    if (activeResizePointerId !== null && e?.pointerId !== activeResizePointerId) return;
+    activeResizePointerId = null;
     if (isSidebarResizing) {
       isSidebarResizing = false;
       documentSidebar.classList.remove("resizing");
       document.body.style.cursor = "";
       document.body.style.userSelect = "";
       cm.refresh();
-      return;
     }
 
-    if (!isDragging) return;
-    isDragging = false;
-    splitter.classList.remove("dragging");
-    document.body.style.cursor = "";
-    document.body.style.userSelect = "";
+    if (isDragging) {
+      isDragging = false;
+      splitter.classList.remove("dragging");
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+      cm.refresh();
+    }
+  }
+
+  document.addEventListener("pointerup", finishResize);
+  document.addEventListener("pointercancel", finishResize);
+
+  sidebarResizer.addEventListener("keydown", (e) => {
+    if (mobileLayoutQuery.matches || !["ArrowLeft", "ArrowRight", "Home", "End"].includes(e.key)) return;
+    e.preventDefault();
+    const step = e.shiftKey ? 40 : 10;
+    const current = documentSidebar.getBoundingClientRect().width;
+    if (e.key === "Home") applySidebarWidth(SIDEBAR_MIN_WIDTH);
+    else if (e.key === "End") applySidebarWidth(getMaxSidebarWidth());
+    else applySidebarWidth(current + (e.key === "ArrowRight" ? step : -step));
+  });
+
+  splitter.addEventListener("keydown", (e) => {
+    if (mobileLayoutQuery.matches || !["ArrowLeft", "ArrowRight", "Home", "End"].includes(e.key)) return;
+    e.preventDefault();
+    const resizableWidth = getResizableEditorWidth();
+    const current = editorPane.getBoundingClientRect().width;
+    const step = e.shiftKey ? 40 : 10;
+    if (e.key === "Home") applyEditorPaneWidth(200);
+    else if (e.key === "End") applyEditorPaneWidth(resizableWidth - 200);
+    else applyEditorPaneWidth(current + (e.key === "ArrowRight" ? step : -step));
     cm.refresh();
   });
 
@@ -1832,11 +2087,12 @@ ${bodyHtml}
     });
   }
 
-  function closeToolbarOverflowPopup() {
+  function closeToolbarOverflowPopup({ restoreFocus = false } = {}) {
     if (!overflowPopupEl || overflowPopupEl.hidden) return;
     overflowPopupEl.hidden = true;
     moreBtnEl?.classList.remove("is-open");
     moreBtnEl?.setAttribute("aria-expanded", "false");
+    if (restoreFocus) moreBtnEl?.focus();
   }
 
   function openToolbarOverflowPopup() {
@@ -1844,6 +2100,7 @@ ${bodyHtml}
     overflowPopupEl.hidden = false;
     moreBtnEl?.classList.add("is-open");
     moreBtnEl?.setAttribute("aria-expanded", "true");
+    requestAnimationFrame(() => overflowPopupEl.querySelector('[role="menuitem"]')?.focus());
   }
 
   // 重排核心：测量当前工具栏的可见宽度，决定哪些按钮要进下拉
@@ -1909,6 +2166,7 @@ ${bodyHtml}
     popupItems.forEach((item) => {
       const clone = item.cloneNode(true);
       clone.removeAttribute("data-overflow-hidden");
+      clone.setAttribute("role", "menuitem");
       overflowPopupEl.appendChild(clone);
     });
 
@@ -1939,7 +2197,22 @@ ${bodyHtml}
     closeToolbarOverflowPopup();
   });
   document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape") closeToolbarOverflowPopup();
+    if (e.key === "Escape") closeToolbarOverflowPopup({ restoreFocus: true });
+  });
+
+  overflowPopupEl?.addEventListener("keydown", (e) => {
+    if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(e.key)) return;
+    const items = Array.from(overflowPopupEl.querySelectorAll('[role="menuitem"]'));
+    if (!items.length) return;
+    e.preventDefault();
+    const currentIndex = items.indexOf(document.activeElement);
+    let nextIndex;
+    if (e.key === "Home") nextIndex = 0;
+    else if (e.key === "End") nextIndex = items.length - 1;
+    else if (currentIndex === -1) nextIndex = e.key === "ArrowUp" ? items.length - 1 : 0;
+    else if (e.key === "ArrowDown") nextIndex = (currentIndex + 1) % items.length;
+    else nextIndex = (currentIndex - 1 + items.length) % items.length;
+    items[nextIndex].focus();
   });
 
   // 监听编辑面板尺寸变化（拖 splitter / 切换侧边栏 / 窗口缩放都会触发）

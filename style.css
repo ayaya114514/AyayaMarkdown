@@ -1,6 +1,6 @@
 /* =========================================================
    AyayaMarkdown —— 样式表
-   - 双主题（浅色/深色）通过 body[data-theme] 切换
+   - 应用运行时固定使用深色主题；导出文件另有独立的明暗样式
    - 所有颜色用 CSS 变量管理，方便维护
    ========================================================= */
 
@@ -113,6 +113,13 @@ button {
   background: none;
   border: none;
   cursor: pointer;
+}
+
+button:focus-visible,
+a:focus-visible,
+[role="separator"]:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
 }
 
 a {
@@ -310,6 +317,7 @@ body.sidebar-collapsed .document-sidebar-resizer {
   height: 100%;
   cursor: col-resize;
   z-index: 2;
+  touch-action: none;
 }
 
 .document-sidebar-resizer::after {
@@ -478,7 +486,8 @@ body.sidebar-collapsed .document-sidebar-resizer {
 }
 
 .document-item:hover .document-delete,
-.document-item.active .document-delete {
+.document-item.active .document-delete,
+.document-item:focus-within .document-delete {
   opacity: 1;
 }
 
@@ -730,6 +739,15 @@ body.sidebar-collapsed .document-sidebar-resizer {
   position: relative;
 }
 
+.export-render-host {
+  position: fixed;
+  top: 0;
+  left: -100000px;
+  width: 860px;
+  visibility: hidden;
+  pointer-events: none;
+}
+
 /* ============================================================
    编辑器（CodeMirror）
    ============================================================ */
@@ -964,6 +982,7 @@ body[data-theme="dark"] .CodeMirror-selected {
   position: relative;
   flex-shrink: 0;
   transition: background-color 0.15s ease;
+  touch-action: none;
 }
 
 .splitter:hover,
@@ -1164,11 +1183,13 @@ body[data-theme="dark"] .CodeMirror-selected {
   cursor: pointer;
 }
 
-.code-block-wrapper:hover .code-lang-label {
+.code-block-wrapper:hover .code-lang-label,
+.code-block-wrapper:focus-within .code-lang-label {
   opacity: 0;
 }
 
-.code-block-wrapper:hover .copy-btn {
+.code-block-wrapper:hover .copy-btn,
+.code-block-wrapper:focus-within .copy-btn {
   opacity: 1;
   pointer-events: auto;
 }
@@ -1447,11 +1468,11 @@ body[data-theme="dark"] .CodeMirror-selected {
   }
 
   .pane-editor {
-    flex: 1;
+    flex: 1 !important;
   }
 
   .pane-preview {
-    flex: 1;
+    flex: 1 !important;
     border-left: none;
     border-top: 1px solid var(--border);
   }
@@ -1462,5 +1483,26 @@ body[data-theme="dark"] .CodeMirror-selected {
 
   .markdown-body {
     padding: 20px;
+  }
+}
+
+@media (max-width: 360px) {
+  .toolbar-right {
+    display: none;
+  }
+
+  .toolbar {
+    gap: 8px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
   }
 }

@@ -1,0 +1,14 @@
+{
+  "name": "ayaya-markdown",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "validate": "node --check app.js && node scripts/validate.mjs",
+    "test": "npm run validate && playwright test",
+    "test:browser": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.61.1"
+  }
+}
