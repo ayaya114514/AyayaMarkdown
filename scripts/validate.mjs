@@ -32,6 +32,17 @@ for (const tag of externalAssetTags) {
   if (!/\bcrossorigin="anonymous"/.test(tag)) failures.push(`missing crossorigin: ${tag}`);
 }
 
+// GitHub Pages 会缓存静态资源：app.js 与 style.css 必须带同一个 ?v= 版本号，
+// 否则部署后可能出现新 JS 配旧 CSS。
+const cacheVersions = ["app.js", "style.css"].map((asset) => {
+  const match = html.match(new RegExp(`(?:src|href)="${asset.replace(".", "\\.")}\\?v=([^"&]+)"`));
+  if (!match) failures.push(`${asset} is missing a ?v= cache-busting version`);
+  return match?.[1];
+});
+if (cacheVersions.every(Boolean) && cacheVersions[0] !== cacheVersions[1]) {
+  failures.push(`app.js (?v=${cacheVersions[0]}) and style.css (?v=${cacheVersions[1]}) cache versions differ`);
+}
+
 if (!html.includes("Content-Security-Policy")) failures.push("index.html is missing a Content Security Policy");
 if (!app.includes("DOMPurify.sanitize")) failures.push("Markdown output is not sanitized with DOMPurify");
 if (/securityLevel:\s*["']loose["']/.test(app)) failures.push("Mermaid securityLevel must not be loose");

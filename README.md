@@ -6,11 +6,11 @@
 ## ✨ 特性
 
 - **实时预览**：左侧编辑，右侧实时渲染
-- **多文档侧边栏**：新建和上传的文档会保存在浏览器本地，可隐藏、切换和拖拽调宽
+- **多文档侧边栏**：新建和上传的文档会保存在浏览器本地，可隐藏、切换和拖拽调宽；多个标签页之间自动同步
 - **代码高亮**：基于 highlight.js，支持上百种语言
 - **编辑器语法着色**：标题、列表、链接、引用、代码块等 Markdown 语法在编辑区直接高亮
 - **Mermaid 图表**：流程图、时序图、类图等
-- **LaTeX 公式**：基于 KaTeX，支持行内与块级公式
+- **LaTeX 公式**：基于 KaTeX，支持 `$…$` / `\(…\)` 行内公式与 `$$…$$` / `\[…\]` 块级公式；`$5 和 $10` 这类金额不会被误识别，`\$` 输出字面 `$`
 - **文件操作**：新建、上传 `.md`、导出 `.md` / `.html` / `.pdf`
 - **深色界面**：专注写作的统一深色主题
 - **安全预览**：DOMPurify 清理 Markdown HTML，Mermaid 使用 strict security mode
@@ -48,7 +48,7 @@ npx playwright install chromium
 npm test
 ```
 
-`npm run validate` 执行 JavaScript syntax、HTML asset、SRI 与 security contract 检查；`npm test` 还会运行 Chromium browser tests，覆盖 XSS、即时导出、文档顺序和 responsive layout。
+`npm run validate` 执行 JavaScript syntax、HTML asset、SRI、cache-busting 版本与 security contract 检查；`npm test` 还会运行 Chromium browser tests，覆盖 XSS、即时导出、快捷键、公式分隔符、多标签页同步与冲突、存储读取失败、文档顺序和 responsive layout。
 
 ## ☁️ 部署到 GitHub Pages
 
@@ -70,7 +70,7 @@ npm test
 ## 📁 项目结构
 
 ```
-markdown-editor/
+AyayaMarkdown/
 ├── .github/workflows/
 │   └── deploy-pages.yml # GitHub Pages 自动部署
 ├── scripts/validate.mjs # 静态 validation

@@ -4,14 +4,14 @@
  * 功能模块：
  *   1. 编辑器初始化（CodeMirror）
  *   2. Markdown -> HTML 渲染（marked + highlight.js）
- *   3. LaTeX 公式渲染（KaTeX auto-render）
+ *   3. LaTeX 公式渲染（KaTeX 只渲染 marked 数学扩展生成的节点）
  *   4. Mermaid 图表渲染
  *   5. 多文档侧边栏 / 文件上传 / 导出 MD / HTML / PDF
  *   6. 主题：仅深色（早期支持的浅色已移除）
  *   7. 左右面板宽度可拖拽调整
  *   8. 文档集合保存到 IndexedDB；UI 小状态仍走 localStorage
  *   9. 字数统计 + Toast 通知
- *   10. 快捷键（Ctrl+S / Ctrl+N / Ctrl+O）
+ *   10. 快捷键（Ctrl+S / Ctrl+O）
  *   11. 目录锚点跳转 + 跳转后返回原位置
  *   12. 编辑器格式化工具栏（含窄宽溢出折叠）
  * ============================================================= */
@@ -27,6 +27,9 @@
   let renderVersion = 0;
   let storageWriteChain = Promise.resolve();
   const persistedDocumentVersions = new Map();
+  // 保存时发生跨标签页冲突的文档：用于只提示一次
+  const conflictedDocIds = new Set();
+  let documentsReady = false;
   let isDragging = false;
   let isSidebarResizing = false;
   // 拖动起始锚点：避免按下时按"鼠标绝对位置"重算宽度导致瞬移，改成基于按下那一刻的宽度做增量计算
@@ -129,7 +132,7 @@ sequenceDiagram
 
 | 功能 | 快捷键 | 状态 |
 | ---- | ------ | ---- |
-| 新建 | Ctrl+N | ✅ |
+| 新建 | 工具栏按钮 | ✅ |
 | 上传 | Ctrl+O | ✅ |
 | 导出 | Ctrl+S | ✅ |
 
@@ -163,7 +166,6 @@ sequenceDiagram
     highlight: window.hljs,
     Mermaid: window.mermaid,
     KaTeX: window.katex,
-    "KaTeX auto-render": window.renderMathInElement,
     CodeMirror: window.CodeMirror,
   };
   const missingDependencies = Object.entries(requiredDependencies)
@@ -322,6 +324,14 @@ sequenceDiagram
       .replace(/'/g, "&#39;");
   }
 
+  // 页面外壳自带的 id（#preview、#editor 等）：预览里的标题和用户 HTML 不能再占用，
+  // 否则同一页面出现重复 id，锚点和 getElementById 都可能指错元素。
+  const RESERVED_IDS = new Set(Array.from(document.querySelectorAll("[id]"), (el) => el.id));
+
+  DOMPurify.addHook("afterSanitizeAttributes", (node) => {
+    if (node.id && RESERVED_IDS.has(node.id)) node.removeAttribute("id");
+  });
+
   function parseAndSanitizeMarkdown(md) {
     const parsed = marked.parse(md);
     return DOMPurify.sanitize(parsed, {
@@ -333,20 +343,28 @@ sequenceDiagram
   }
 
   /* ---------- 数学公式扩展 ----------
-   * 默认情况下多行 $$...$$ 会被 marked 拆成多个 <p>$$</p>，
-   * KaTeX auto-render 跨不过 <p> 边界。
-   * 这里注册两个自定义 token，让 marked 把公式作为整体输出，
-   * 再交给 KaTeX 在预览阶段渲染。
+   * 公式只从这两个 marked token 产生，渲染阶段只对它们生成的节点调用 KaTeX。
+   * 不再用 auto-render 扫全文：它会把“$5 和 $10”这类金额当成公式，
+   * 也会绕过 markdown 的 \$ 转义。
+   *   块级：$$...$$、\[...\]（独占段落）
+   *   行内：$...$（Pandoc 规则：$ 内侧不能是空白，结尾 $ 后不能紧跟数字）、
+   *         \(...\)、段落中的 $$...$$（按 display 渲染）
    */
+  function earliestIndex(src, needles) {
+    const indexes = needles.map((needle) => src.indexOf(needle)).filter((idx) => idx !== -1);
+    return indexes.length ? Math.min(...indexes) : undefined;
+  }
+
   const mathBlockExt = {
     name: "mathBlock",
     level: "block",
     start(src) {
-      const idx = src.indexOf("$$");
-      return idx === -1 ? undefined : idx;
+      return earliestIndex(src, ["$$", "\\["]);
     },
     tokenizer(src) {
-      const match = src.match(/^\$\$([\s\S]+?)\$\$\s*(?:\n|$)/);
+      const match =
+        src.match(/^\$\$([\s\S]+?)\$\$\s*(?:\n|$)/) ||
+        src.match(/^\\\[([\s\S]+?)\\\]\s*(?:\n|$)/);
       if (match) {
         return {
           type: "mathBlock",
@@ -356,10 +374,9 @@ sequenceDiagram
       }
     },
     renderer(token) {
-      // 公式里可能含 <、>、& 等字符，必须先转义后再拼进 HTML，
-      // 否则浏览器会把它当成标签解析，导致 DOM 结构错乱、KaTeX 拿到的也是错的文本。
-      // KaTeX auto-render 内部会自动 decode HTML entities，所以这里转义是安全的。
-      return `<div class="math-block">$$${escapeHtml(token.text)}$$</div>\n`;
+      // 公式里可能含 <、>、& 等字符，必须先转义后再拼进 HTML；
+      // 渲染阶段从 textContent 取回原文交给 KaTeX。
+      return `<div class="math-block">${escapeHtml(token.text)}</div>\n`;
     },
   };
 
@@ -367,25 +384,84 @@ sequenceDiagram
     name: "mathInline",
     level: "inline",
     start(src) {
-      const idx = src.indexOf("$");
-      return idx === -1 ? undefined : idx;
+      return earliestIndex(src, ["$", "\\("]);
     },
     tokenizer(src) {
-      // 单 $ 行内公式：避开 $$（块级）和未闭合的情况
-      const match = src.match(/^\$(?!\$)((?:\\.|[^\$\n])+?)\$(?!\d)/);
+      const display = src.match(/^\$\$(?!\$)([\s\S]+?)\$\$/) || src.match(/^\\\(([\s\S]+?)\\\)/);
+      if (display) {
+        return {
+          type: "mathInline",
+          raw: display[0],
+          text: display[1].trim(),
+          display: display[0].startsWith("$$"),
+        };
+      }
+
+      const match = src.match(/^\$(?![\s$])((?:\\.|[^\\$\n])+?)(?<!\s)\$(?!\d)/);
       if (match) {
         return {
           type: "mathInline",
           raw: match[0],
           text: match[1],
+          display: false,
         };
       }
     },
     renderer(token) {
-      // 同上：转义后再拼，避免公式中的 <、>、& 破坏 HTML 结构
-      return `<span class="math-inline">$${escapeHtml(token.text)}$</span>`;
+      const className = token.display ? "math-inline math-display" : "math-inline";
+      return `<span class="${className}">${escapeHtml(token.text)}</span>`;
     },
   };
+
+  function renderMathNodes(root) {
+    root.querySelectorAll(".math-inline, .math-block").forEach((node) => {
+      try {
+        window.katex.render(node.textContent, node, {
+          displayMode: node.classList.contains("math-block") || node.classList.contains("math-display"),
+          throwOnError: false,
+        });
+      } catch (e) {
+        console.warn("KaTeX 渲染失败:", e);
+      }
+    });
+  }
+
+  /* ---------- 代码高亮缓存 ----------
+   * 每次预览重渲染都会重新高亮全部代码块；未改动的块直接复用结果。
+   * 未标注语言的超长代码块跳过 highlightAuto（它要把所有语言都试一遍）。
+   */
+  const HIGHLIGHT_CACHE_LIMIT = 200;
+  const AUTO_DETECT_MAX_LENGTH = 20000;
+  const highlightCache = new Map();
+
+  function highlightCode(text, language) {
+    const key = `${language}\u0000${text}`;
+    if (highlightCache.has(key)) {
+      const cached = highlightCache.get(key);
+      highlightCache.delete(key);
+      highlightCache.set(key, cached);
+      return cached;
+    }
+
+    let highlighted;
+    try {
+      if (language && hljs.getLanguage(language)) {
+        highlighted = hljs.highlight(text, { language, ignoreIllegals: true }).value;
+      } else if (text.length <= AUTO_DETECT_MAX_LENGTH) {
+        highlighted = hljs.highlightAuto(text).value;
+      } else {
+        highlighted = escapeHtml(text);
+      }
+    } catch (_) {
+      highlighted = escapeHtml(text);
+    }
+
+    highlightCache.set(key, highlighted);
+    if (highlightCache.size > HIGHLIGHT_CACHE_LIMIT) {
+      highlightCache.delete(highlightCache.keys().next().value);
+    }
+    return highlighted;
+  }
 
   marked.use({
     gfm: true,
@@ -404,28 +480,15 @@ sequenceDiagram
           return `<div class="mermaid">${escapeHtml(text)}</div>`;
         }
 
-        // 普通代码块：用 highlight.js 高亮
-        let highlighted;
-        if (language && hljs.getLanguage(language)) {
-          try {
-            highlighted = hljs.highlight(text, { language, ignoreIllegals: true }).value;
-          } catch (_) {
-            highlighted = escapeHtml(text);
-          }
-        } else {
-          // 未指定语言时尝试自动识别
-          try {
-            highlighted = hljs.highlightAuto(text).value;
-          } catch (_) {
-            highlighted = escapeHtml(text);
-          }
-        }
+        // 普通代码块：用 highlight.js 高亮（未指定语言时尝试自动识别）
+        const highlighted = highlightCode(text, language);
 
         const langLabel = language || "text";
         const langClass = langLabel.replace(/[^a-z0-9_-]/g, "-") || "text";
+        // 复制内容直接取 <code> 的 textContent，不再把整段代码塞进 data 属性
         return `<div class="code-block-wrapper">
   <span class="code-lang-label">${escapeHtml(langLabel)}</span>
-  <button class="copy-btn" data-code="${encodeURIComponent(text)}">
+  <button class="copy-btn" type="button">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
       <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
       <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
@@ -449,11 +512,22 @@ sequenceDiagram
       taskLists: true,
     };
 
+    // 与预览的行内公式规则保持一致：$ 内侧不能是空白，结尾 $ 后不能紧跟数字，
+    // 这样“$5 和 $10”在编辑区也不会被着色成公式。
     function findClosingDollar(stream) {
       const line = stream.string;
-      let pos = stream.pos + 1;
+      const open = stream.pos;
+      if (open + 1 >= line.length || /\s/.test(line[open + 1])) return -1;
+      let pos = open + 2;
       while (pos < line.length) {
-        if (line[pos] === "$" && line[pos - 1] !== "\\") return pos;
+        if (line[pos] === "\\") {
+          pos += 2;
+          continue;
+        }
+        if (line[pos] === "$") {
+          if (/\s/.test(line[pos - 1]) || /\d/.test(line[pos + 1] || "")) return -1;
+          return pos;
+        }
         pos += 1;
       }
       return -1;
@@ -552,16 +626,10 @@ sequenceDiagram
     autofocus: true,
     styleActiveLine: true,
     placeholder: "在这里开始写 Markdown…",
+    // Ctrl/Cmd+S 只由 document 上的全局快捷键处理：keydown 会从编辑器冒泡上去，
+    // 这里再绑一次会导出两份文件。
     extraKeys: {
       Enter: "newlineAndIndentContinueMarkdownList",
-      "Ctrl-S": (cm) => {
-        exportMarkdown();
-        return false;
-      },
-      "Cmd-S": (cm) => {
-        exportMarkdown();
-        return false;
-      },
     },
   });
   window.cm = cm;
@@ -577,33 +645,47 @@ sequenceDiagram
   }
 
   function bindCopyButtons(root) {
-    root.querySelectorAll(".copy-btn").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        const code = decodeURIComponent(btn.dataset.code || "");
-        copyToClipboard(code);
-        const original = btn.innerHTML;
-        btn.innerHTML = "✓ 已复制";
-        setTimeout(() => (btn.innerHTML = original), 1500);
+    root.querySelectorAll(".code-block-wrapper .copy-btn").forEach((btn) => {
+      // 原始内容只在绑定时记一次：连续点击时不会把“已复制”当成原始内容存下来
+      const original = btn.innerHTML;
+      let resetTimer = null;
+      btn.addEventListener("click", async () => {
+        const code = btn.closest(".code-block-wrapper")?.querySelector("pre code")?.textContent || "";
+        const copied = await copyToClipboard(code);
+        btn.textContent = copied ? "✓ 已复制" : "复制失败";
+        clearTimeout(resetTimer);
+        resetTimer = setTimeout(() => {
+          btn.innerHTML = original;
+        }, 1500);
       });
     });
   }
 
-  async function renderMarkdownInto(root, md, { interactive = false } = {}) {
-    root.innerHTML = parseAndSanitizeMarkdown(md);
-
-    // KaTeX auto-render 会扫描 $...$ 与 $$...$$。
-    window.renderMathInElement(root, {
-      delimiters: [
-        { left: "$$", right: "$$", display: true },
-        { left: "$", right: "$", display: false },
-        { left: "\\(", right: "\\)", display: false },
-        { left: "\\[", right: "\\]", display: true },
-      ],
-      throwOnError: false,
+  // 预览里的外链在新标签页打开，避免点一下就把编辑器页面导航走
+  function openExternalLinksInNewTab(root) {
+    root.querySelectorAll("a[href]").forEach((a) => {
+      if ((a.getAttribute("href") || "").startsWith("#")) return;
+      a.target = "_blank";
+      a.rel = "noopener noreferrer";
     });
+  }
+
+  // 导出的 HTML / PDF 要能在浅色背景和打印中阅读，Mermaid 改用浅色主题；
+  // 用户自己写了 %%{init}%% 指令的图保持原样。
+  function applyMermaidTheme(nodes, theme) {
+    nodes.forEach((node) => {
+      if (/^\s*%%\{/.test(node.textContent)) return;
+      node.textContent = `%%{init: {"theme": "${theme}"}}%%\n${node.textContent}`;
+    });
+  }
+
+  async function renderMarkdownInto(root, md, { interactive = false, mermaidTheme = null } = {}) {
+    root.innerHTML = parseAndSanitizeMarkdown(md);
+    renderMathNodes(root);
 
     const mermaidNodes = root.querySelectorAll(".mermaid");
     mermaidNodes.forEach((node) => node.removeAttribute("data-processed"));
+    if (mermaidTheme) applyMermaidTheme(mermaidNodes, mermaidTheme);
     if (mermaidNodes.length) {
       try {
         await window.mermaid.run({ nodes: mermaidNodes });
@@ -613,7 +695,10 @@ sequenceDiagram
     }
 
     assignHeadingIds(root);
-    if (interactive) bindCopyButtons(root);
+    if (interactive) {
+      bindCopyButtons(root);
+      openExternalLinksInNewTab(root);
+    }
   }
 
   async function renderPreview() {
@@ -622,14 +707,7 @@ sequenceDiagram
     const md = cm.getValue();
     const currentRenderVersion = ++renderVersion;
 
-    // 统计放最前面、独立 try-catch，
-    // 这样即便后续 marked / KaTeX / Mermaid 任何一个抛错，统计都还是会更新
-    try {
-      updateStats(md);
-    } catch (e) {
-      console.error("updateStats failed:", e);
-    }
-
+    // 统计由编辑器的 change / cursorActivity 事件独立刷新，渲染失败也不影响
     try {
       await renderMarkdownInto(previewEl, md, { interactive: true });
     } catch (e) {
@@ -672,19 +750,25 @@ sequenceDiagram
     );
   }
 
-  function assignHeadingIds(root) {
+  // 按出现顺序给标题分配 id：同名标题加序号区分，并跳过页面外壳占用的 id。
+  // 预览渲染和源码扫描共用同一规则，保证两边算出的 id 一致。
+  function createHeadingIdAllocator() {
     const used = Object.create(null);
+    return (text) => {
+      const base = slugify(text);
+      let id;
+      do {
+        used[base] = used[base] === undefined ? 0 : used[base] + 1;
+        id = used[base] === 0 ? base : `${base}-${used[base]}`;
+      } while (RESERVED_IDS.has(id));
+      return id;
+    };
+  }
+
+  function assignHeadingIds(root) {
+    const nextId = createHeadingIdAllocator();
     root.querySelectorAll("h1, h2, h3, h4, h5, h6").forEach((h) => {
-      const base = slugify(h.textContent);
-      let id = base;
-      // 同名标题加序号区分
-      if (used[base] !== undefined) {
-        used[base] += 1;
-        id = `${base}-${used[base]}`;
-      } else {
-        used[base] = 0;
-      }
-      h.id = id;
+      h.id = nextId(h.textContent);
     });
   }
 
@@ -717,7 +801,7 @@ sequenceDiagram
     if (!window.cm) return [];
     const src = cm.getValue();
     const lines = src.split("\n");
-    const used = Object.create(null);
+    const nextId = createHeadingIdAllocator();
     const result = [];
     let inFence = false;
     // 围栏代码块（``` 或 ~~~），代码块内的 # 不算标题
@@ -728,15 +812,7 @@ sequenceDiagram
     const setextH2Re = /^-+\s*$/;
 
     function pushHeading(line, level, text) {
-      const base = slugify(text);
-      let id = base;
-      if (used[base] !== undefined) {
-        used[base] += 1;
-        id = `${base}-${used[base]}`;
-      } else {
-        used[base] = 0;
-      }
-      result.push({ line, level, text, id });
+      result.push({ line, level, text, id: nextId(text) });
     }
 
     for (let i = 0; i < lines.length; i++) {
@@ -892,8 +968,32 @@ sequenceDiagram
   /* =============================================================
    * 6. 字数 / 行数 / 字符数统计
    * ============================================================= */
+  // 字数口径：汉字 / 日文假名逐字计数；其余文字按空白分词，
+  // 只含标点或 Markdown 符号（#、-、** 等）的片段不计入。
+  const CJK_CHAR_RE = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]/gu;
+  const WORD_CHAR_RE = /[\p{L}\p{N}]/u;
+
   function countWords(text) {
-    return text.trim() ? text.trim().split(/\s+/).filter(Boolean).length : 0;
+    const cjkCount = (text.match(CJK_CHAR_RE) || []).length;
+    const otherWords = text
+      .replace(CJK_CHAR_RE, " ")
+      .split(/\s+/)
+      .filter((token) => WORD_CHAR_RE.test(token)).length;
+    return cjkCount + otherWords;
+  }
+
+  // change 与 cursorActivity 在一次输入里会连续触发，合并到下一帧只统计一次全文
+  let statsFrame = 0;
+  function scheduleStats() {
+    if (statsFrame) return;
+    statsFrame = requestAnimationFrame(() => {
+      statsFrame = 0;
+      try {
+        updateStats(cm.getValue());
+      } catch (e) {
+        console.error("updateStats failed:", e);
+      }
+    });
   }
 
   function updateStats(text) {
@@ -979,13 +1079,13 @@ sequenceDiagram
     });
   }
 
-  // 仅用于旧数据迁移和首次初始化；日常保存走单文档 put，避免每次输入重写整库。
-  async function idbWriteAll(docs) {
+  // 仅用于旧数据迁移和首次初始化（且只在确认 IDB 为空时调用）；日常保存走单文档 put。
+  // 绝不 clear()：万一读取失败被误判为空库，也不能把已有文档抹掉。
+  async function idbPutAll(docs) {
     const db = await openIdb();
     return new Promise((resolve, reject) => {
       const tx = db.transaction(IDB_STORE, "readwrite");
       const store = tx.objectStore(IDB_STORE);
-      store.clear();
       docs.forEach((doc) => store.put(doc));
       tx.oncomplete = () => resolve();
       tx.onerror = () => reject(tx.error);
@@ -997,6 +1097,7 @@ sequenceDiagram
     constructor(docId) {
       super(`文档 ${docId} 已在另一个标签页中更新`);
       this.name = "DocumentConflictError";
+      this.docId = docId;
     }
   }
 
@@ -1057,7 +1158,11 @@ sequenceDiagram
       (e) => {
         console.warn("保存文档到 IndexedDB 失败:", e);
         if (e instanceof DocumentConflictError) {
-          showToast("另一标签页已更新此文档；本页未覆盖远端版本，请导出备份后刷新", "error");
+          // 冲突状态下后续每次保存都会失败，同一文档只提示一次，避免 toast 刷屏
+          if (!conflictedDocIds.has(e.docId)) {
+            conflictedDocIds.add(e.docId);
+            showToast("另一标签页已更新此文档；本页未覆盖远端版本，请导出备份后刷新", "error");
+          }
           return false;
         }
         if (showError || !storageFailureShown) {
@@ -1183,14 +1288,33 @@ sequenceDiagram
     }
   }
 
+  function sortDocuments(list) {
+    return list.sort((a, b) => {
+      const timeDiff = b.createdAt - a.createdAt;
+      return timeDiff || b.id.localeCompare(a.id);
+    });
+  }
+
   async function initializeDocuments() {
     // 1) 优先从 IndexedDB 读
     let loaded = [];
+    let readFailed = false;
     try {
       const raw = await idbReadAll();
       loaded = raw.map((doc) => createDocumentRecord(doc));
     } catch (e) {
       console.warn("IndexedDB 读取失败:", e);
+      readFailed = true;
+    }
+
+    // 读取失败 ≠ 空库：不迁移、不写入、不清理旧 key，只给一篇临时文档。
+    // 临时文档被编辑后按新 id 单独保存，不会覆盖库里已有的文档。
+    if (readFailed) {
+      documents = [createDocumentRecord({ title: "未命名文档", content: "" })];
+      persistedDocumentVersions.clear();
+      activeDocId = documents[0].id;
+      showToast("本地文档读取失败，已打开临时文档；已有文档不会被覆盖，请稍后刷新", "error");
+      return;
     }
 
     // 2) IDB 空，尝试迁移老版本写在 localStorage 里的 documents
@@ -1199,7 +1323,7 @@ sequenceDiagram
       if (legacy.length) {
         loaded = legacy;
         try {
-          await idbWriteAll(loaded);
+          await idbPutAll(loaded);
           // 迁移成功才删 localStorage 里的老数据，失败保留以便下次重试
           safeStorageRemove(DOCUMENTS_KEY);
           console.log("[AyayaMarkdown] 已从 localStorage 迁移文档到 IndexedDB");
@@ -1220,18 +1344,15 @@ sequenceDiagram
           source: legacyDraft ? "created" : "sample",
         }),
       ];
-      safeStorageRemove(LEGACY_DRAFT_KEY);
       try {
-        await idbWriteAll(loaded);
+        await idbPutAll(loaded);
+        safeStorageRemove(LEGACY_DRAFT_KEY);
       } catch (_) {
         // 即便首次写失败也不影响进入界面，后续单文档保存还会重试
       }
     }
 
-    documents = loaded.sort((a, b) => {
-      const timeDiff = b.createdAt - a.createdAt;
-      return timeDiff || b.id.localeCompare(a.id);
-    });
+    documents = sortDocuments(loaded);
     persistedDocumentVersions.clear();
     documents.forEach((doc) => persistedDocumentVersions.set(doc.id, doc.updatedAt));
 
@@ -1255,6 +1376,8 @@ sequenceDiagram
       const expectedUpdatedAt = persistedDocumentVersions.get(snapshot.id) || 0;
       await idbPutDocument(snapshot, expectedUpdatedAt);
       persistedDocumentVersions.set(snapshot.id, snapshot.updatedAt);
+      conflictedDocIds.delete(snapshot.id);
+      announceDocumentsChanged();
     }, showError);
   }
 
@@ -1263,32 +1386,42 @@ sequenceDiagram
       const expectedUpdatedAt = persistedDocumentVersions.get(docId) || 0;
       await idbDeleteDocument(docId, expectedUpdatedAt);
       persistedDocumentVersions.delete(docId);
+      conflictedDocIds.delete(docId);
+      announceDocumentsChanged();
     }, showError);
   }
 
+  // 只有内容真的变了才推进版本号。切标签页、切文档、导出都会 flush，
+  // 如果无条件刷新 updatedAt，就会让其他标签页误判冲突，列表也会把旧文档显示成“刚刚”。
   function updateDocumentSnapshot(doc, content) {
-    const previousTitle = doc.title;
+    if (doc.content === content) return false;
     doc.content = content;
-    doc.updatedAt = Date.now();
+    doc.updatedAt = Math.max(Date.now(), (Number(doc.updatedAt) || 0) + 1);
+    return true;
+  }
 
-    if (doc.source !== "uploaded") {
-      doc.title = inferDocumentTitle(content);
-    }
-
+  function refreshDocumentTitle(doc) {
+    if (doc.source === "uploaded") return false;
+    const previousTitle = doc.title;
+    doc.title = inferDocumentTitle(doc.content);
     return doc.title !== previousTitle;
+  }
+
+  // 本地有尚未成功写入 IndexedDB 的修改
+  function isDocumentDirty(doc) {
+    return doc.updatedAt !== persistedDocumentVersions.get(doc.id);
   }
 
   function queueCurrentDocumentSave(content) {
     const doc = getActiveDocument();
-    if (!doc) return;
+    if (!doc || !updateDocumentSnapshot(doc, content)) return;
 
-    const titleChanged = updateDocumentSnapshot(doc, content);
-    if (titleChanged) renderDocumentList();
-
+    // 标题推断要扫描全文，放进防抖里做，不在每次按键时跑
     clearTimeout(saveTimer);
     saveTimer = setTimeout(() => {
-      void persistDocument(doc);
+      refreshDocumentTitle(doc);
       renderDocumentList();
+      void persistDocument(doc);
     }, 250);
   }
 
@@ -1300,8 +1433,109 @@ sequenceDiagram
     if (!doc) return Promise.resolve(false);
 
     updateDocumentSnapshot(doc, cm.getValue());
+    if (!isDocumentDirty(doc)) return Promise.resolve(true);
+    // 读取失败时给的临时空文档：没写过内容就不落库
+    if (!persistedDocumentVersions.has(doc.id) && !doc.content) return Promise.resolve(true);
+
+    refreshDocumentTitle(doc);
     renderDocumentList();
     return persistDocument(doc, true);
+  }
+
+  /* ---------- 跨标签页同步 ----------
+   * 任一标签页写库成功后广播一次；其他标签页重读 IndexedDB：
+   *   - 本地没有未保存修改的文档直接换成新版本（当前文档会就地刷新编辑器）
+   *   - 本地有未保存修改的文档保持不动，之后保存时由版本检查报冲突
+   *   - 其他标签页新建 / 删除的文档同步进列表
+   */
+  const syncChannel = typeof BroadcastChannel === "function" ? new BroadcastChannel("ayaya-markdown-documents") : null;
+  let remoteSyncTimer = null;
+
+  function announceDocumentsChanged() {
+    try {
+      syncChannel?.postMessage({ type: "documents-changed" });
+    } catch (e) {
+      console.warn("广播文档更新失败:", e);
+    }
+  }
+
+  syncChannel?.addEventListener("message", (e) => {
+    if (e.data?.type !== "documents-changed") return;
+    clearTimeout(remoteSyncTimer);
+    remoteSyncTimer = setTimeout(() => void syncDocumentsFromStorage(), 50);
+  });
+
+  function reloadActiveDocumentInPlace(doc) {
+    const cursor = cm.getCursor();
+    const scroll = cm.getScrollInfo();
+    isLoadingDocument = true;
+    try {
+      cm.setValue(doc.content || "");
+    } finally {
+      isLoadingDocument = false;
+    }
+    cm.setCursor(cursor);
+    cm.scrollTo(scroll.left, scroll.top);
+    scheduleStats();
+    schedulePreview();
+  }
+
+  async function syncDocumentsFromStorage() {
+    if (!documentsReady || !window.cm) return;
+
+    let stored;
+    try {
+      stored = (await idbReadAll()).map((doc) => createDocumentRecord(doc));
+    } catch (e) {
+      console.warn("同步其他标签页的文档失败:", e);
+      return;
+    }
+
+    const storedById = new Map(stored.map((doc) => [doc.id, doc]));
+    const next = [];
+    let activeContentChanged = false;
+
+    documents.forEach((doc) => {
+      const remote = storedById.get(doc.id);
+      storedById.delete(doc.id);
+      const dirty = isDocumentDirty(doc);
+
+      if (remote) {
+        if (!dirty && remote.updatedAt !== doc.updatedAt) {
+          if (doc.id === activeDocId && remote.content !== doc.content) activeContentChanged = true;
+          Object.assign(doc, remote);
+          persistedDocumentVersions.set(doc.id, remote.updatedAt);
+          conflictedDocIds.delete(doc.id);
+        }
+        next.push(doc);
+      } else if (dirty || !persistedDocumentVersions.has(doc.id)) {
+        // 库里没有，但本地有未保存内容或从未保存过：保留
+        next.push(doc);
+      } else {
+        // 其他标签页删除了它
+        persistedDocumentVersions.delete(doc.id);
+        scrollPositions.delete(doc.id);
+      }
+    });
+
+    storedById.forEach((remote) => {
+      next.push(remote);
+      persistedDocumentVersions.set(remote.id, remote.updatedAt);
+    });
+
+    // 删除最后一篇时，替补文档会在下一次广播里到达，这里先不清空列表
+    if (!next.length) return;
+
+    documents = sortDocuments(next);
+    if (!documents.some((doc) => doc.id === activeDocId)) {
+      activeDocId = documents[0].id;
+      safeStorageSet(ACTIVE_DOCUMENT_KEY, activeDocId);
+      loadActiveDocumentIntoEditor();
+      return;
+    }
+
+    if (activeContentChanged) reloadActiveDocumentInPlace(getActiveDocument());
+    renderDocumentList();
   }
 
   // 记录当前活动文档的滚动位置（编辑器 + 预览），供切换回来时恢复用
@@ -1411,6 +1645,10 @@ sequenceDiagram
 
   function renderDocumentList() {
     docCount.textContent = documents.length.toLocaleString();
+    // 整个列表会重建，记住焦点所在的文档按钮，重建后放回去（键盘切换文档时不丢焦点）
+    const focusedDocId = documentList.contains(document.activeElement)
+      ? document.activeElement.closest("[data-doc-id]")?.dataset.docId
+      : null;
 
     documentList.innerHTML = documents
       .map((doc) => {
@@ -1419,8 +1657,8 @@ sequenceDiagram
         const meta = escapeHtml(`${getSourceLabel(doc.source)} · ${formatUpdatedAt(doc.updatedAt)}`);
         const id = escapeHtml(doc.id);
 
-        return `<div class="document-item${isActive ? " active" : ""}">
-  <button class="document-switch" data-doc-id="${id}" role="option" aria-selected="${isActive}">
+        return `<div class="document-item${isActive ? " active" : ""}" role="listitem">
+  <button class="document-switch" type="button" data-doc-id="${id}"${isActive ? ' aria-current="true"' : ""}>
     <svg class="document-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
       <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
       <polyline points="14 2 14 8 20 8" />
@@ -1430,7 +1668,7 @@ sequenceDiagram
       <span class="document-meta">${meta}</span>
     </span>
   </button>
-  <button class="document-delete" data-delete-doc="${id}" title="删除文档" aria-label="删除 ${title}">
+  <button class="document-delete" type="button" data-delete-doc="${id}" title="删除文档" aria-label="删除 ${title}">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
       <line x1="18" y1="6" x2="6" y2="18" />
       <line x1="6" y1="6" x2="18" y2="18" />
@@ -1439,7 +1677,29 @@ sequenceDiagram
 </div>`;
       })
       .join("");
+
+    if (focusedDocId) {
+      const button = Array.from(documentList.querySelectorAll(".document-switch")).find(
+        (item) => item.dataset.docId === focusedDocId
+      );
+      button?.focus();
+    }
   }
+
+  // 文档列表键盘导航：上下（窄屏横排时左右）方向键在文档之间移动焦点
+  documentList.addEventListener("keydown", (e) => {
+    if (!["ArrowDown", "ArrowUp", "ArrowLeft", "ArrowRight", "Home", "End"].includes(e.key)) return;
+    const buttons = Array.from(documentList.querySelectorAll(".document-switch"));
+    const currentIndex = buttons.indexOf(e.target.closest(".document-switch"));
+    if (currentIndex === -1) return;
+    e.preventDefault();
+    let nextIndex;
+    if (e.key === "Home") nextIndex = 0;
+    else if (e.key === "End") nextIndex = buttons.length - 1;
+    else if (e.key === "ArrowDown" || e.key === "ArrowRight") nextIndex = Math.min(buttons.length - 1, currentIndex + 1);
+    else nextIndex = Math.max(0, currentIndex - 1);
+    buttons[nextIndex].focus();
+  });
 
   documentList.addEventListener("click", (e) => {
     const deleteButton = e.target.closest("[data-delete-doc]");
@@ -1524,7 +1784,7 @@ sequenceDiagram
     document.body.appendChild(host);
 
     try {
-      await renderMarkdownInto(root, md);
+      await renderMarkdownInto(root, md, { mermaidTheme: "default" });
       root.querySelectorAll(".copy-btn").forEach((button) => button.remove());
       return root.innerHTML;
     } finally {
@@ -1727,6 +1987,14 @@ sequenceDiagram
   th { background: var(--code-bg); }
   img { max-width: 100%; }
   .mermaid { text-align: center; margin: 1em 0; }
+  /* Mermaid 按浅色主题渲染；深色阅读模式下给图一张浅色底卡片 */
+  @media (prefers-color-scheme: dark) {
+    .mermaid svg { background: #fff; border-radius: 8px; padding: 12px; }
+  }
+  li:has(> input[type="checkbox"]:first-child),
+  li:has(> p:first-child > input[type="checkbox"]:first-child) { list-style: none; }
+  li > input[type="checkbox"]:first-child,
+  li > p:first-child > input[type="checkbox"]:first-child { margin: 0 .5em 0 -1.4em; }
   /* 打印 / PDF 导出强制浅色 */
   @media print {
     body { background: #fff !important; color: #1f2328 !important; }
@@ -1763,12 +2031,17 @@ ${bodyHtml}
     }, 2400);
   }
 
-  function copyToClipboard(text) {
-    if (navigator.clipboard) {
-      navigator.clipboard.writeText(text).catch(() => fallbackCopy(text));
-    } else {
-      fallbackCopy(text);
+  // 返回是否真的复制成功，按钮据此显示“已复制”或“复制失败”
+  async function copyToClipboard(text) {
+    if (navigator.clipboard?.writeText) {
+      try {
+        await navigator.clipboard.writeText(text);
+        return true;
+      } catch (_) {
+        // 权限被拒或非安全上下文：退回 execCommand
+      }
     }
+    return fallbackCopy(text);
   }
 
   function fallbackCopy(text) {
@@ -1778,10 +2051,12 @@ ${bodyHtml}
     ta.style.opacity = "0";
     document.body.appendChild(ta);
     ta.select();
+    let copied = false;
     try {
-      document.execCommand("copy");
+      copied = document.execCommand("copy");
     } catch (_) {}
     document.body.removeChild(ta);
+    return copied;
   }
 
   /* =============================================================
@@ -1914,16 +2189,11 @@ ${bodyHtml}
     const isMod = e.ctrlKey || e.metaKey;
     if (!isMod) return;
 
-    // Ctrl/Cmd + S: 导出 MD
+    // Ctrl/Cmd + S: 导出 MD（按住不放时浏览器会连发 keydown，只响应第一次）
+    // 不提供 Ctrl/Cmd + N：Chrome 等浏览器保留该组合键用于新建窗口，网页拦截不到。
     if (e.key === "s" || e.key === "S") {
       e.preventDefault();
-      exportMarkdown();
-    }
-    // Ctrl/Cmd + N: 新建（注意：浏览器原生 Ctrl+N 通常不可拦截，但我们仍尝试）
-    else if (e.key === "n" || e.key === "N") {
-      // 浏览器一般不允许覆盖，因此仅在能拦截时生效
-      e.preventDefault();
-      newDocument();
+      if (!e.repeat) exportMarkdown();
     }
     // Ctrl/Cmd + O: 上传
     else if (e.key === "o" || e.key === "O") {
@@ -2256,33 +2526,23 @@ ${bodyHtml}
       }
     })
     .then(() => {
+      documentsReady = true;
       loadActiveDocumentIntoEditor();
 
       // change 事件触发三条独立路径：
-      //   - 统计立即更新（无防抖，输入时数字实时跳动）
+      //   - 统计合并到下一帧更新（与 cursorActivity 共用一次全文统计）
       //   - 当前文档写入内存并防抖保存到 IndexedDB
       //   - 预览走防抖（120ms 后渲染，避免大文档卡顿）
       cm.on("change", () => {
-        const value = cm.getValue();
-        try {
-          updateStats(value);
-        } catch (e) {
-          console.error("updateStats failed:", e);
-        }
+        scheduleStats();
         if (!isLoadingDocument) {
-          queueCurrentDocumentSave(value);
+          queueCurrentDocumentSave(cm.getValue());
         }
         schedulePreview();
       });
 
-      // 光标或选区变化时立即刷新“选中 / 总计”统计；不触发保存或预览重渲染。
-      cm.on("cursorActivity", () => {
-        try {
-          updateStats(cm.getValue());
-        } catch (e) {
-          console.error("selection stats failed:", e);
-        }
-      });
+      // 光标或选区变化时刷新“选中 / 总计”统计；不触发保存或预览重渲染。
+      cm.on("cursorActivity", scheduleStats);
 
       // 首次：立即更新统计 + 安排首次渲染
       try {

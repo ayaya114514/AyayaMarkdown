@@ -499,12 +499,14 @@ body.sidebar-collapsed .document-sidebar-resizer {
   background: var(--bg-elevated);
 }
 
+/* 编辑 / 预览默认平分侧边栏以外的宽度（flex-basis 0 + 相同 grow），
+   不能写 50%：那是整个 workspace 的一半，侧边栏展开时预览区会被挤窄 */
 .pane-editor {
-  flex: 0 0 50%;
+  flex: 1 1 0;
 }
 
 .pane-preview {
-  flex: 1;
+  flex: 1 1 0;
   border-left: 1px solid var(--border);
   position: relative;
 }
@@ -1244,9 +1246,19 @@ body[data-theme="dark"] .CodeMirror-selected {
   box-shadow: var(--shadow-sm);
 }
 
-/* 任务列表 */
+/* 任务列表：GFM 任务项不再显示圆点，复选框占据圆点的位置 */
 .markdown-body input[type="checkbox"] {
   margin-right: 6px;
+}
+
+.markdown-body li:has(> input[type="checkbox"]:first-child),
+.markdown-body li:has(> p:first-child > input[type="checkbox"]:first-child) {
+  list-style: none;
+}
+
+.markdown-body li > input[type="checkbox"]:first-child,
+.markdown-body li > p:first-child > input[type="checkbox"]:first-child {
+  margin: 0 8px 0 -1.4em;
 }
 
 /* Mermaid 图表容器 */

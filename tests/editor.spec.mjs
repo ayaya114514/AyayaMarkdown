@@ -86,14 +86,175 @@ test("does not silently overwrite a document changed in another tab", async ({ c
   await openEditor(firstTab);
   await openEditor(secondTab);
 
+  // 两边在对方保存前都改了同一篇文档：后保存的一方必须报冲突，而不是覆盖
   await firstTab.evaluate(() => window.cm.setValue("# First tab version"));
-  await firstTab.waitForTimeout(350);
+  await secondTab.waitForTimeout(100);
   await secondTab.evaluate(() => window.cm.setValue("# Conflicting second tab version"));
   await expect(secondTab.locator("#toast-container")).toContainText("另一标签页已更新此文档");
+
+  // 冲突后继续输入不会反复弹同一条提示
+  for (const text of ["a", "b", "c"]) {
+    await secondTab.evaluate((value) => window.cm.replaceRange(value, { line: 0, ch: 0 }), text);
+    await secondTab.waitForTimeout(300);
+  }
+  // toast 会自动消失，用即时计数而不是会重试的 toHaveCount
+  expect(await secondTab.locator(".toast", { hasText: "另一标签页已更新此文档" }).count()).toBe(1);
 
   await secondTab.reload();
   await secondTab.waitForFunction(() => window.cm && document.querySelector("#preview h1"));
   await expect(secondTab.locator("#preview h1")).toHaveText("First tab version");
+});
+
+test("syncs edits between tabs without false conflicts from unchanged flushes", async ({ context }) => {
+  const firstTab = await context.newPage();
+  const secondTab = await context.newPage();
+  await openEditor(firstTab);
+  await openEditor(secondTab);
+
+  // 第一个标签页没有修改，只是被切到后台（会 flush 一次）
+  await firstTab.evaluate(() => window.dispatchEvent(new Event("pagehide")));
+  await firstTab.waitForTimeout(200);
+
+  await secondTab.evaluate(() => window.cm.setValue("# Edited in second tab"));
+  await secondTab.waitForTimeout(400);
+  await expect(secondTab.locator(".toast.error")).toHaveCount(0);
+
+  // 另一标签页无本地修改，自动刷新成最新内容
+  await expect(firstTab.locator("#preview h1")).toHaveText("Edited in second tab");
+  await expect(firstTab.locator(".document-title").first()).toHaveText("Edited in second tab");
+});
+
+test("does not bump the saved version of an unchanged document when switching", async ({ page }) => {
+  await openEditor(page);
+  const readVersions = () =>
+    page.evaluate(
+      () =>
+        new Promise((resolve) => {
+          const request = indexedDB.open("ayaya-markdown");
+          request.onsuccess = () => {
+            const all = request.result.transaction("documents").objectStore("documents").getAll();
+            all.onsuccess = () => resolve(Object.fromEntries(all.result.map((doc) => [doc.id, doc.updatedAt])));
+          };
+        })
+    );
+
+  await page.locator("#btn-new").click();
+  await page.waitForTimeout(300);
+  const before = await readVersions();
+  await page.waitForTimeout(50);
+  await page.locator(".document-switch").nth(1).click();
+  await page.locator(".document-switch").nth(0).click();
+  await page.waitForTimeout(300);
+  expect(await readVersions()).toEqual(before);
+});
+
+test("keeps existing documents when the first IndexedDB read fails", async ({ page }) => {
+  await openEditor(page);
+  await page.evaluate(() => window.cm.setValue("# Precious document"));
+  await page.waitForTimeout(400);
+
+  await page.addInitScript(() => {
+    if (sessionStorage.getItem("idb-read-failed-once")) return;
+    sessionStorage.setItem("idb-read-failed-once", "1");
+    const original = IDBObjectStore.prototype.getAll;
+    IDBObjectStore.prototype.getAll = function () {
+      IDBObjectStore.prototype.getAll = original;
+      throw new DOMException("simulated read failure", "UnknownError");
+    };
+  });
+  await page.reload();
+  await page.waitForFunction(() => window.cm && document.querySelector(".document-title"));
+  await expect(page.locator("#toast-container")).toContainText("本地文档读取失败");
+  await page.waitForTimeout(400);
+
+  await page.reload();
+  await page.waitForFunction(() => window.cm && document.querySelector("#preview h1"));
+  await expect(page.locator(".document-title")).toHaveText(["Precious document"]);
+});
+
+test("exports once per Ctrl/Cmd+S even when the editor has focus", async ({ page }) => {
+  await openEditor(page);
+  let downloads = 0;
+  page.on("download", () => downloads++);
+  await page.locator(".CodeMirror").click();
+  await page.keyboard.press("ControlOrMeta+s");
+  await page.waitForTimeout(800);
+  expect(downloads).toBe(1);
+});
+
+test("renders math only from math syntax, not currency or escaped dollars", async ({ page }) => {
+  await openEditor(page);
+  await page.evaluate(() =>
+    window.cm.setValue(
+      "# Math\n\n价格 $5 和 $10。\n\n转义 \\$5 和 \\$6。\n\n行内 $x^2$ 与 \\(y^2\\)。\n\n\\[z^2\\]\n\n$$\nw^2\n$$"
+    )
+  );
+  const paragraphs = page.locator("#preview > p");
+  await expect(paragraphs.nth(0)).toHaveText("价格 $5 和 $10。");
+  await expect(paragraphs.nth(0).locator(".katex")).toHaveCount(0);
+  await expect(paragraphs.nth(1)).toHaveText("转义 $5 和 $6。");
+  await expect(paragraphs.nth(2).locator(".katex")).toHaveCount(2);
+  await expect(page.locator("#preview .math-block .katex-display")).toHaveCount(2);
+});
+
+test("keeps preview heading ids from colliding with app ids", async ({ page }) => {
+  await openEditor(page);
+  await page.evaluate(() => window.cm.setValue('# preview\n\n<div id="editor">raw</div>\n\n[back](#preview)'));
+  await expect(page.locator("#preview h1")).toHaveId("preview-1");
+  expect(await page.evaluate(() => ["preview", "editor"].map((id) => document.querySelectorAll(`#${id}`).length))).toEqual([1, 1]);
+});
+
+test("counts CJK characters individually in the word statistic", async ({ page }) => {
+  await openEditor(page);
+  await page.evaluate(() => window.cm.setValue("# 中文测试\n\nhello world，没有空格。"));
+  await expect(page.locator("#stat-words")).toHaveText("10");
+});
+
+test("restores the copy button label after repeated clicks", async ({ page, context }) => {
+  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+  await openEditor(page);
+  await page.evaluate(() => window.cm.setValue("# Copy\n\n```js\nlet answer = 42;\n```"));
+  await expect(page.locator("#preview h1")).toHaveText("Copy");
+  const wrapper = page.locator("#preview .code-block-wrapper");
+  const button = wrapper.locator(".copy-btn");
+  await wrapper.hover();
+  await button.click();
+  await page.waitForTimeout(300);
+  await button.click();
+  await expect(button).toContainText("已复制");
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe("let answer = 42;");
+  await page.waitForTimeout(1700);
+  await expect(button).toHaveText("复制");
+});
+
+test("opens external preview links in a new tab", async ({ page }) => {
+  await openEditor(page);
+  await page.evaluate(() => window.cm.setValue("# Links\n\n[out](https://example.com) [in](#links)"));
+  await expect(page.locator('#preview a[href="https://example.com"]')).toHaveAttribute("target", "_blank");
+  await expect(page.locator('#preview a[href="#links"]')).not.toHaveAttribute("target", /.+/);
+});
+
+test("splits editor and preview evenly by default", async ({ page }) => {
+  await openEditor(page);
+  const widths = await page.evaluate(() =>
+    [".pane-editor", ".pane-preview"].map((selector) => document.querySelector(selector).getBoundingClientRect().width)
+  );
+  expect(Math.abs(widths[0] - widths[1])).toBeLessThan(4);
+});
+
+test("exports Mermaid diagrams with a light theme", async ({ page }, testInfo) => {
+  await openEditor(page);
+  await page.evaluate(() => window.cm.setValue("# Diagram\n\n```mermaid\ngraph LR\n  A --> B\n```"));
+  await expect(page.locator("#preview h1")).toHaveText("Diagram");
+  await expect(page.locator("#preview .mermaid svg")).toBeVisible();
+  const downloadPromise = page.waitForEvent("download");
+  await page.locator("#btn-export-html").click();
+  const outputPath = testInfo.outputPath("diagram.html");
+  await (await downloadPromise).saveAs(outputPath);
+  const exported = await readFile(outputPath, "utf8");
+  expect(exported).toContain("<svg");
+  expect(exported.toLowerCase()).toContain("#ececff");
+  expect(exported).not.toContain("%%{init");
 });
 
 test("resets a desktop split when entering the mobile layout", async ({ page }) => {
