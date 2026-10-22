@@ -32,6 +32,18 @@ for (const tag of externalAssetTags) {
   if (!/\bcrossorigin="anonymous"/.test(tag)) failures.push(`missing crossorigin: ${tag}`);
 }
 
+// app.js 按需加载的 CDN 脚本（LAZY_SCRIPTS）同样要固定版本并带 SRI。
+const lazyScripts = [...app.matchAll(/src: "(https:\/\/[^"]+)",\s*integrity: "([^"]*)"/g)];
+if (!lazyScripts.length) failures.push("app.js LAZY_SCRIPTS not found");
+for (const [, src, integrity] of lazyScripts) {
+  if (!/^sha384-/.test(integrity)) failures.push(`lazy script missing SRI: ${src}`);
+  if (!/@\d+\.\d+\.\d+\//.test(src)) failures.push(`lazy script version is not pinned: ${src}`);
+}
+const lazySrcPattern = /"https:\/\/(?:cdn\.jsdelivr\.net|cdnjs\.cloudflare\.com)\/[^"]+\.js"/g;
+if ((app.match(lazySrcPattern) || []).length !== lazyScripts.length) {
+  failures.push("app.js loads a CDN script outside LAZY_SCRIPTS");
+}
+
 // GitHub Pages 会缓存静态资源：app.js 与 style.css 必须带同一个 ?v= 版本号，
 // 否则部署后可能出现新 JS 配旧 CSS。
 const cacheVersions = ["app.js", "style.css"].map((asset) => {
@@ -52,5 +64,5 @@ if (failures.length) {
   console.error(failures.map((failure) => `- ${failure}`).join("\n"));
   process.exitCode = 1;
 } else {
-  console.log(`Validated ${ids.length} unique ids, ${localAssets.length} local assets, and ${externalAssetTags.length} SRI-protected CDN assets.`);
+  console.log(`Validated ${ids.length} unique ids, ${localAssets.length} local assets, ${externalAssetTags.length} SRI-protected CDN assets, and ${lazyScripts.length} lazy CDN scripts.`);
 }

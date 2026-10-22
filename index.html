@@ -35,7 +35,7 @@
   <!-- KaTeX：LaTeX 数学公式渲染 -->
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.47/dist/katex.min.css" integrity="sha384-nH0MfJ44wi1dd7w6jinlyBgljjS8EJAh2JBoRad8a3VDw2K69vfaaqm4WnR+gXtA" crossorigin="anonymous" />
 
-  <link rel="stylesheet" href="style.css?v=23" />
+  <link rel="stylesheet" href="style.css?v=24" />
 </head>
 <body data-theme="dark">
   <!-- 顶部工具栏 -->
@@ -318,17 +318,13 @@
   <!-- Toast 提示容器 -->
   <div class="toast-container" id="toast-container" role="status" aria-live="polite" aria-atomic="false"></div>
 
-  <!-- 第三方依赖（顺序很重要） -->
+  <!-- 第三方依赖（顺序很重要）；KaTeX 与 Mermaid 由 app.js 在用到时才加载（LAZY_SCRIPTS） -->
   <!-- marked：markdown -> html -->
   <script defer src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js" integrity="sha384-/TQbtLCAerC3jgaim+N78RZSDYV7ryeoBCVqTuzRrFec2akfBkHS7ACQ3PQhvMVi" crossorigin="anonymous"></script>
   <!-- DOMPurify：清理 marked 生成的 HTML，阻止上传文档执行脚本 -->
   <script defer src="https://cdn.jsdelivr.net/npm/dompurify@3.4.16/dist/purify.min.js" integrity="sha384-a7SzOxErzJ3ZpQz0zJ32d67dSitNzPcbfybc/ykU9KJhMgZkwqfSxlhhdJRS+XGL" crossorigin="anonymous"></script>
   <!-- highlight.js：代码高亮（注意必须用浏览器 UMD 版，不能用 npm 的 lib/*.js） -->
   <script defer src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.12.0/highlight.min.js" integrity="sha384-wjfDDhOPPdjtva8vWBhWeVprSpmxisEu5aYT3q1JyACqXpdKpo3PWZTMVq24MBix" crossorigin="anonymous"></script>
-  <!-- KaTeX：公式渲染（只渲染 marked 数学扩展生成的节点） -->
-  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.47/dist/katex.min.js" integrity="sha384-CwjPRVHTvLiMBFjEoij+QZViMV5rhTOIp7CJzl24JEqpRDA1sJFHVXXLURktbYYp" crossorigin="anonymous"></script>
-  <!-- Mermaid：图表 -->
-  <script defer src="https://cdn.jsdelivr.net/npm/mermaid@10.9.8/dist/mermaid.min.js" integrity="sha384-N3QqR/7q+xm3BGX+CBbNI8AUmRRqcsDzToy+0z1NLDI0QmTKW8zvwLvqulJgk3dP" crossorigin="anonymous"></script>
   <!-- CodeMirror 编辑器 -->
   <script defer src="https://cdn.jsdelivr.net/npm/codemirror@5.65.21/lib/codemirror.min.js" integrity="sha384-0g/X0mKSHhn466L6gmwQ9T6fCIeXJnwNSxvvJ0BdQtCDDS0FexoLx+DrxcZEZzEg" crossorigin="anonymous"></script>
   <script defer src="https://cdn.jsdelivr.net/npm/codemirror@5.65.21/addon/mode/overlay.min.js" integrity="sha384-HzSQBt/V6L9T9omLpLPpo+z/nGM80YSJ6kJT5O8V8w8cIB8kIybmkHD5/v55bNh4" crossorigin="anonymous"></script>
@@ -341,6 +337,6 @@
   <script defer src="https://cdn.jsdelivr.net/npm/codemirror@5.65.21/addon/selection/active-line.min.js" integrity="sha384-ZIw7otVwZKaXjpx7E+9EXjbv9VboAhTTbuoVUzI1JqBsLinWhn46R8kxM5kKBYvF" crossorigin="anonymous"></script>
   <script defer src="https://cdn.jsdelivr.net/npm/codemirror@5.65.21/addon/display/placeholder.min.js" integrity="sha384-yEfY6Yaj0h+SckpcjXwotRdmrumLrseIPlqnxHUlteAZ+0LjeGqOhNly4NTLiYqo" crossorigin="anonymous"></script>
 
-  <script defer src="app.js?v=23"></script>
+  <script defer src="app.js?v=24"></script>
 </body>
 </html>

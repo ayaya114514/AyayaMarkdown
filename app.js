@@ -164,8 +164,6 @@ sequenceDiagram
     marked: window.marked,
     DOMPurify: window.DOMPurify,
     highlight: window.hljs,
-    Mermaid: window.mermaid,
-    KaTeX: window.katex,
     CodeMirror: window.CodeMirror,
   };
   const missingDependencies = Object.entries(requiredDependencies)
@@ -287,18 +285,6 @@ sequenceDiagram
       window.cm.setOption("theme", "material-darker");
     }
 
-    // Mermaid 主题（重新初始化后需要重渲染）
-    if (window.mermaid) {
-      window.mermaid.initialize({
-        startOnLoad: false,
-        theme: "dark",
-        securityLevel: "strict",
-        htmlLabels: false,
-        fontFamily: "Inter, sans-serif",
-      });
-      // 让预览刷新一次以重渲染图表
-      schedulePreview();
-    }
   }
 
   applyTheme();
@@ -413,10 +399,74 @@ sequenceDiagram
     },
   };
 
-  function renderMathNodes(root) {
-    root.querySelectorAll(".math-inline, .math-block").forEach((node) => {
+  /* ---------- 按需加载的依赖 ----------
+   * KaTeX 和 Mermaid（单 Mermaid 就约 1 MB gzip）只在文档里真有公式 / 图表时才下载；
+   * 同样是固定版本 + SRI，每个库只加载一次，失败后下次渲染会重试。
+   */
+  const LAZY_SCRIPTS = {
+    katex: {
+      src: "https://cdn.jsdelivr.net/npm/katex@0.16.47/dist/katex.min.js",
+      integrity: "sha384-CwjPRVHTvLiMBFjEoij+QZViMV5rhTOIp7CJzl24JEqpRDA1sJFHVXXLURktbYYp",
+    },
+    mermaid: {
+      src: "https://cdn.jsdelivr.net/npm/mermaid@10.9.8/dist/mermaid.min.js",
+      integrity: "sha384-N3QqR/7q+xm3BGX+CBbNI8AUmRRqcsDzToy+0z1NLDI0QmTKW8zvwLvqulJgk3dP",
+    },
+  };
+  const lazyScriptLoads = new Map();
+
+  function loadLazyScript(name) {
+    if (window[name]) return Promise.resolve(window[name]);
+    if (!lazyScriptLoads.has(name)) {
+      const { src, integrity } = LAZY_SCRIPTS[name];
+      const load = new Promise((resolve, reject) => {
+        const script = document.createElement("script");
+        script.src = src;
+        script.integrity = integrity;
+        script.crossOrigin = "anonymous";
+        script.onload = () => (window[name] ? resolve(window[name]) : reject(new Error(`${name} 加载后不可用`)));
+        script.onerror = () => reject(new Error(`${name} 加载失败`));
+        document.head.appendChild(script);
+      }).catch((error) => {
+        lazyScriptLoads.delete(name);
+        throw error;
+      });
+      lazyScriptLoads.set(name, load);
+    }
+    return lazyScriptLoads.get(name);
+  }
+
+  let mermaidInitialized = false;
+
+  async function loadMermaid() {
+    const mermaid = await loadLazyScript("mermaid");
+    if (!mermaidInitialized) {
+      mermaid.initialize({
+        startOnLoad: false,
+        theme: "dark",
+        securityLevel: "strict",
+        htmlLabels: false,
+        fontFamily: "Inter, sans-serif",
+      });
+      mermaidInitialized = true;
+    }
+    return mermaid;
+  }
+
+  async function renderMathNodes(root) {
+    const nodes = root.querySelectorAll(".math-inline, .math-block");
+    if (!nodes.length) return;
+    let katex;
+    try {
+      katex = await loadLazyScript("katex");
+    } catch (e) {
+      // 加载失败时公式保留源码文本，其余内容照常显示
+      console.warn("KaTeX 加载失败:", e);
+      return;
+    }
+    nodes.forEach((node) => {
       try {
-        window.katex.render(node.textContent, node, {
+        katex.render(node.textContent, node, {
           displayMode: node.classList.contains("math-block") || node.classList.contains("math-display"),
           throwOnError: false,
         });
@@ -679,20 +729,60 @@ sequenceDiagram
     });
   }
 
+  /* ---------- Mermaid 结果缓存 ----------
+   * 每次预览重渲染都会重建整个 DOM；源码没变的图表直接复用上次的 SVG，
+   * 只有新增或改过的图表才交给 mermaid.run()。导出时源码里带浅色主题指令，
+   * 因此和预览的深色结果分开缓存。
+   */
+  const MERMAID_CACHE_LIMIT = 50;
+  const mermaidCache = new Map();
+
+  async function renderMermaidNodes(nodes) {
+    const pending = [];
+    nodes.forEach((node) => {
+      const source = node.textContent;
+      if (!mermaidCache.has(source)) {
+        pending.push({ node, source });
+        return;
+      }
+      const svg = mermaidCache.get(source);
+      mermaidCache.delete(source);
+      mermaidCache.set(source, svg);
+      node.innerHTML = svg;
+      node.setAttribute("data-processed", "true");
+    });
+    if (!pending.length) return;
+
+    try {
+      const mermaid = await loadMermaid();
+      await mermaid.run({ nodes: pending.map(({ node }) => node) });
+    } catch (e) {
+      console.warn("Mermaid 渲染失败:", e);
+    }
+    pending.forEach(({ node, source }) => {
+      if (node.getAttribute("data-processed") !== "true" || !node.querySelector("svg")) return;
+      mermaidCache.set(source, node.innerHTML);
+      if (mermaidCache.size > MERMAID_CACHE_LIMIT) {
+        mermaidCache.delete(mermaidCache.keys().next().value);
+      }
+    });
+  }
+
+  // 同一个 root 上新的渲染开始后，旧渲染在 await 之后不再碰 DOM（否则会重复绑定复制按钮）
+  const renderTokens = new WeakMap();
+
   async function renderMarkdownInto(root, md, { interactive = false, mermaidTheme = null } = {}) {
+    const token = (renderTokens.get(root) || 0) + 1;
+    renderTokens.set(root, token);
     root.innerHTML = parseAndSanitizeMarkdown(md);
-    renderMathNodes(root);
 
     const mermaidNodes = root.querySelectorAll(".mermaid");
-    mermaidNodes.forEach((node) => node.removeAttribute("data-processed"));
     if (mermaidTheme) applyMermaidTheme(mermaidNodes, mermaidTheme);
-    if (mermaidNodes.length) {
-      try {
-        await window.mermaid.run({ nodes: mermaidNodes });
-      } catch (e) {
-        console.warn("Mermaid 渲染失败:", e);
-      }
-    }
+    await Promise.all([
+      renderMathNodes(root),
+      mermaidNodes.length ? renderMermaidNodes(mermaidNodes) : null,
+    ]);
+    if (renderTokens.get(root) !== token) return;
 
     assignHeadingIds(root);
     if (interactive) {
